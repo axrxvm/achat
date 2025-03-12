@@ -1,0 +1,23 @@
+{
+  "name": "achat",
+  "version": "0.1.7",
+  "description": "A Real-Time chat application made using Node.js, Express.js and Socket.io.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "Aarav Mehta",
+  "license": "GNU",
+  "dependencies": {
+    "bad-words": "^3.0.4",
+    "dotenv": "^8.2.0",
+    "express": "^4.17.1",
+    "socket.io": "^2.3.0"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
