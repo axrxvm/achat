@@ -1,21 +1,22 @@
 {
   "name": "achat",
-  "main": "src/index.js", // Assuming your main Worker file is in src/index.js
-  "compatibility_date": "2024-01-01", // Or a more recent date
+  "main": "src/index.js",
+  "compatibility_date": "2024-01-01",
   "compatibility_flags": [],
-  "workers_dev": true, // Or false if you have a custom domain
-  "route": "",        // Define your routes if you're not using workers.dev subdomain
-  "zone_id": "",      // Your Cloudflare Zone ID (if using a custom domain)
-  "account_id": "",   // Your Cloudflare Account ID
-  "vars": {},          // Environment variables for your Worker
-  "kv_namespaces": [], // Bindings to your Workers KV namespaces
-  "r2_buckets": [],    // Bindings to your R2 buckets
+  "workers_dev": true,
+  "route": "",
+  "zone_id": "",
+  "account_id": "",
+  "vars": {},
+  "kv_namespaces": [],
+  "r2_buckets": [],
   "durable_objects": {
-    "bindings": []    // Bindings to your Durable Object namespaces
+    "bindings": []
   },
-  "services": [],      // Bindings to other Cloudflare Workers services
-  "wasm_modules": {}, // Bindings to WebAssembly modules
-  "logpush": {        // Configuration for Logpush (if needed)
+  "services": [],
+  "wasm_modules": {},
+  "logpush": true, // Or false to disable logpush entirely
+  "logpush_config": { // New key for the detailed configuration
     "destination": {
       "type": "s3",
       "bucket": "your-s3-bucket-name",
@@ -39,20 +40,20 @@
     ],
     "frequency": "daily"
   },
-  "analytics": true,   // Enable basic analytics
+  "analytics": true,
   "build": {
-    "command": "npm run build", // Your build command (if you have one)
+    "command": "npm run build",
     "cwd": ".",
     "watch_dir": ["src"],
-    "upload_dir": "dist"      // Assuming your bundled output is in a 'dist' folder
+    "upload_dir": "dist"
   },
   "dev": {
     "binding": {
-      "YOUR_KV_NAMESPACE": "your_kv_namespace_id", // Example KV binding for local development
-      "YOUR_R2_BUCKET": "your_r2_bucket_name"    // Example R2 binding
+      "YOUR_KV_NAMESPACE": "your_kv_namespace_id",
+      "YOUR_R2_BUCKET": "your_r2_bucket_name"
     }
   },
   "test": {
-    "command": "npm run test" // Your test command
+    "command": "npm run test"
   }
 }
