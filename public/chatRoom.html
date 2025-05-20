@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="./img/icon-msg.png" />
+  <title>AChat</title>
+
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.12.1/css/all.min.css"
+    integrity="sha256-mmgLkCYLUQbXn0B1SRqzHar6dCnv9oZFPEC1g1cwlkk=" crossorigin="anonymous" />
+
+  <!-- Custom CSS -->
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/index.css" />
+
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- SweetAlert2 -->
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11.7.20/dist/sweetalert2.all.min.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11.7.20/dist/sweetalert2.min.css" rel="stylesheet" />
+
+  <!-- jQuery -->
+  <script src="https://code.jquery.com/jquery-3.7.0.min.js"
+    integrity="sha256-2Pmvv0kuTBOenSvLm6bvfBSSHrUJ+3A7x6P5Ebd07/g=" crossorigin="anonymous"></script>
+
+  <!-- Tailwind Config -->
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            primary: {
+              50: "#eff6ff",
+              100: "#dbeafe",
+              200: "#bfdbfe",
+              300: "#93c5fd",
+              400: "#60a5fa",
+              500: "#3b82f6",
+              600: "#2563eb",
+              700: "#1d4ed8",
+              800: "#1e40af",
+              900: "#1e3a8a",
+              950: "#172554",
+            },
+          },
+          fontFamily: {
+            monospace: ["monospace", "monospace"],
+          },
+        },
+      },
+      plugins: [],
+    };
+  </script>
+
+  <!-- Full Height for HTML and Body -->
+  <style>
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+    }
+  </style>
+</head>
+
+<body class="min-h-screen w-full bg-gray-900 text-white flex flex-col">
+  <div id="container" class="flex flex-col flex-grow w-full">
+
+    <!-- Header -->
+    <header class="bg-gray-800 border-b border-gray-700 text-white p-4 flex flex-col md:flex-row items-center justify-between">
+      <h1 class="text-2xl font-semibold text-indigo-500"><i class="fas fa-comments mr-2"></i>AChat App</h1>
+      <h3 class="text-base mt-2 md:mt-0 md:ml-4 underline decoration-cyan-500">
+        Welcome, <a id="profile-user"></a> !
+      </h3>
+      <button id="leave-btn" class="bg-blue-500 hover:bg-blue-700 text-white py-2 px-4 rounded mt-2 md:mt-0">
+        Leave Room
+      </button>
+    </header>
+
+    <!-- Main Area (Sidebar + Chat) -->
+    <main class="flex flex-1 overflow-hidden">
+      
+      <!-- Sidebar -->
+      <div class="chat-sidebar w-full md:w-1/4 bg-gray-800 border-r border-gray-700 text-white py-4 px-6 overflow-y-auto">
+        <h3 class="text-xl mb-4"><i class="fas fa-comments"></i> Room Name</h3>
+        <button id="room-name" class="bg-blue-500 mb-2 hover:bg-blue-700 text-white py-2 px-4 rounded"></button>
+        <h3 class="text-xl mb-2"><i class="fas fa-users"></i> List Users</h3>
+        <ul id="users"></ul>
+      </div>
+
+      <!-- Chat Messages -->
+      <div class="chat-messages flex-1 bg-gray-900 py-6 px-8 overflow-y-auto">
+        <!-- Messages will be dynamically injected -->
+      </div>
+
+    </main>
+
+    <!-- Footer / Chat Form -->
+    <div class="chat-form-container py-4 px-6 bg-gray-800 border-t border-gray-700">
+      <form id="chat-form" class="flex items-center">
+        <input id="msg" type="text" placeholder="Enter Message" required autocomplete="off"
+          class="flex-1 pl-4 py-2 px-4 mr-2 bg-white rounded-full outline-none text-black" />
+        <button id="submitMsg" class="bg-blue-500 hover:bg-blue-700 text-white py-2 px-4 rounded">
+          <i class="fas fa-paper-plane mr-2"></i> Send
+        </button>
+      </form>
+    </div>
+
+  </div>
+  <!-- Scripts -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qs/6.9.2/qs.min.js"
+    integrity="sha256-TDxXjkAUay70ae/QJBEpGKkpVslXaHHayklIVglFRT4=" crossorigin="anonymous"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="js/main.js"></script>
+</body>
+
+</html>
