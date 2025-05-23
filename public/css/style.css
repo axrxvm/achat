@@ -87,55 +87,111 @@ a {
 	padding: 30px;
 	max-height: 500px;
 	overflow-y: scroll;
+	/* Added for message alignment */
+	display: flex;
+	flex-direction: column;
 }
 
+/* Base style for all messages */
 .chat-messages .message {
-	padding: 10px;
-	margin-bottom: 15px;
-	background-color: var(--light-color);
-	border-radius: 5px;
-	overflow-wrap: break-word;
+	padding: 12px 15px; /* Increased padding */
+	margin-bottom: 12px; /* Slightly reduced margin */
+	border-radius: 18px; /* Smoother corners */
+	max-width: 70%;    /* Max width for bubbles */
+	word-wrap: break-word;
+	line-height: 1.4; /* Improved line height */
+	box-shadow: 0 1px 3px rgba(0,0,0,0.1); /* Subtle shadow */
 }
+
+/* Styles for other users' messages */
+.chat-messages .message.message--other {
+	background-color: #f0f0f0; /* Light grey */
+	color: #333; /* Darker text */
+	align-self: flex-start; /* Align to left */
+}
+
+/* Styles for the current user's messages */
+.chat-messages .message.message--own {
+	background-color: var(--dark-color-a); /* Using existing variable for consistency */
+	color: white;
+	align-self: flex-end; /* Align to right */
+	/* Optional: if you want the "tail" on a different side or specific shape */
+	/* border-bottom-right-radius: 5px; */ 
+}
+
 
 .chat-messages .message .meta {
-	font-size: 15px;
+	font-size: 0.8em; /* Smaller meta text */
 	font-weight: bold;
-	color: var(--dark-color-b);
-	opacity: 0.7;
-	margin-bottom: 7px;
-	margin-right: 7px;
+	/* color handled by .message--other and .message--own specific styles below */
+	opacity: 0.9;
+	margin-bottom: 5px;
+}
+
+.chat-messages .message.message--other .meta {
+	color: #555; /* Darker grey for other users' meta */
+}
+.chat-messages .message.message--own .meta {
+	color: #e0e0e0; /* Lighter grey for own messages' meta */
 }
 
 .chat-messages .message .meta span {
-	padding: 15px;
-	color: #777;
+	/* padding: 15px; Original padding was too large for inline display */
+	padding-right: 10px; /* Space between username and time */
+	/* color: #777; */ /* Color is now handled by parent context */
 }
+
+.chat-messages .message .text {
+    font-size: 1em; /* Ensure text size is appropriate */
+}
+
 
 .chat-messages .messageLeave .textLeave {
 	padding: 10px;
 	margin-bottom: 15px;
 	background-color: transparent;
 	border-radius: 5px;
-	color: white;
+	color: white; /* This is for leave messages inside dark .chat-messages area */
 	overflow-wrap: break-word;
 	text-align: center;
 	font-style: italic;
 }
 
-.chat-form-container {
-	padding: 20px 30px;
-	background-color: var(--dark-color-a);
-}
-
-.chat-form-container form {
+/* Styling for the chat input area - #chat-form in HTML */
+/* .chat-form-container styles already exist and are decent. Let's enhance the form elements */
+.chat-form-container form#chat-form { /* More specific selector */
 	display: flex;
+	align-items: center;
+	padding: 10px 0; /* Reduced padding from container, add to form if needed */
 }
 
-.chat-form-container input[type='text'] {
+.chat-form-container input#msg { /* Specific to the input field in chatRoom.html */
 	font-size: 16px;
-	height: 40px;
-	flex: 1;
+	padding: 12px 18px; /* Increased padding */
+	height: auto; /* Let padding define height */
+	flex-grow: 1; /* Correct property for flex item */
+	border-radius: 22px; /* Rounded corners for input */
+	border: 1px solid #ddd; /* Softer border */
+	margin-right: 10px;
+	color: #333; /* Text color for input */
+	background-color: #fff; /* Background for input */
 }
+
+.chat-form-container button#submitMsg { /* Specific to the button in chatRoom.html */
+	background-color: var(--dark-color-a); /* Existing variable */
+	color: white;
+	padding: 12px 20px; /* Increased padding */
+	border-radius: 22px; /* Rounded corners for button */
+	border: none;
+	font-size: 16px;
+	cursor: pointer;
+	transition: background-color 0.3s ease; /* Smooth hover */
+}
+
+.chat-form-container button#submitMsg:hover {
+	background-color: var(--dark-color-b); /* Slightly lighter on hover */
+}
+
 
 /* Join Page */
 .join-container {
@@ -197,4 +253,33 @@ a {
 	.chat-sidebar {
 		display: none;
 	}
+}
+
+/* Dashboard specific enhancements */
+.dashboard-card {
+	/* Tailwind classes like bg-gray-700, p-6, rounded-lg, shadow-lg 
+	   are applied directly in dashboard.html for these sections.
+	   This class can be used for any additional, non-Tailwind styling 
+	   or for very specific overrides if needed.
+	   For now, it serves as a semantic marker for sections.
+	*/
+	margin-bottom: 2rem; /* Ensures spacing between cards if not handled by Tailwind's space-y on parent */
+}
+
+/* Styling for dynamically generated elements within dashboard cards if needed,
+   though Tailwind on the JS-generated HTML is preferred. */
+.owned-room-item { /* Example class for items in ownedRoomsList */
+	/* Styles for individual room items if not fully handled by Tailwind in JS */
+	/* e.g. border-bottom: 1px solid var(--dark-color-a); */
+}
+.owned-room-item:last-child {
+	/* border-bottom: none; */
+}
+
+.invite-link-display {
+	font-family: 'Courier New', Courier, monospace; /* Monospaced font for links */
+	background-color: rgba(0,0,0,0.1); /* Slight background to make it look copyable */
+	padding: 2px 6px;
+	border-radius: 4px;
+	word-break: break-all;
 }

@@ -41,33 +41,73 @@
 			}
 		});
 	</script>
-	<div class="join-container min-h-screen flex items-center justify-center bg-gray-900">
-		<main class="join-main mt-8 p-10 rounded-lg shadow-lg bg-white">
-			<header class="join-header text-center">
-				<h1 class="text-4xl p-10 font-semibold text-indigo-500"><i
-						class="fas fa-comments mr-2"></i>AChat App
-				</h1>
+	<div class="min-h-screen flex items-center justify-center bg-gray-900 py-8 px-4 sm:px-6 lg:px-8">
+		<main class="max-w-2xl w-full space-y-8 p-8 sm:p-10 bg-gray-800 rounded-xl shadow-2xl">
+			<header class="text-center">
+				<h1 class="text-4xl font-extrabold text-indigo-400 flex items-center justify-center">
+                    <i class="fas fa-comments mr-3 text-5xl"></i>AChat Dashboard
+                </h1>
 			</header>
-			<form action="#">
-				<div class="mb-4">
-					<label for="username" class="block text-gray-700 font-semibold">Username</label>
-					<input type="text" name="username" id="username" placeholder="Enter username..." required
-						class="w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:border-blue-500">
-				</div>
-				<div class="mb-4">
-					<label for="roomName" class="block text-gray-700 font-semibold">Room</label>
-					<select name="roomName" id="roomName"
-						class="w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:border-blue-500">
-					</select>
-				</div>
-				<button id="joinChat" type="submit"
-					class="w-full bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:bg-blue-700">
-					Join Chat
-				</button>
+            
+            <!-- Join Existing Room Section -->
+			<div class="dashboard-card p-6 rounded-lg shadow-lg bg-gray-700">
+                <h2 class="text-2xl font-semibold text-indigo-300 mb-4 text-center">Join Existing Room</h2>
+                <form id="joinRoomForm"> <!-- Changed action="#" to id -->
+                    <div class="mb-4">
+                        <label for="username" class="block text-sm font-medium text-gray-300">Username</label>
+                        <input type="text" name="username" id="username" placeholder="Enter your username..." required
+                            class="mt-1 block w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded-md text-white shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                    </div>
+                    <div class="mb-4">
+                        <label for="roomName" class="block text-sm font-medium text-gray-300">Select Room</label>
+                        <select name="roomName" id="roomName"
+                            class="mt-1 block w-full pl-3 pr-10 py-2 bg-gray-600 border border-gray-500 text-white rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                            <!-- Options populated by JS -->
+                        </select>
+                    </div>
+                    <button id="joinChat" type="submit"
+                        class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 focus:ring-offset-gray-800">
+                        Join Chat
+                    </button>
+                </form>
+            </div>
 
-			</form>
+			<!-- Create Room Form -->
+			<div class="dashboard-card p-6 rounded-lg shadow-lg bg-gray-700">
+				<h2 class="text-2xl font-semibold text-indigo-300 mb-4 text-center">Create New Room</h2>
+				<form id="createRoomForm">
+					<div class="mb-4">
+						<label for="newRoomName" class="block text-sm font-medium text-gray-300">New Room Name</label>
+						<input type="text" name="newRoomName" id="newRoomName" placeholder="Enter new room name..." required
+							class="mt-1 block w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded-md text-white shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+					</div>
+					<div class="grid grid-cols-2 gap-4 mb-4">
+						<div class="flex items-center">
+							<input type="checkbox" id="isLocked" name="isLocked" class="h-4 w-4 text-indigo-600 border-gray-500 bg-gray-600 rounded focus:ring-indigo-500">
+							<label for="isLocked" class="ml-2 block text-sm text-gray-300">Lock Room?</label>
+						</div>
+						<div class="flex items-center">
+							<input type="checkbox" id="isDiscoverable" name="isDiscoverable" checked class="h-4 w-4 text-indigo-600 border-gray-500 bg-gray-600 rounded focus:ring-indigo-500">
+							<label for="isDiscoverable" class="ml-2 block text-sm text-gray-300">Discoverable?</label>
+						</div>
+					</div>
+					<button id="createRoomButton" type="submit"
+						class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 focus:ring-offset-gray-800">
+						Create Room
+					</button>
+				</form>
+			</div>
+
+			<!-- Owned Rooms Display -->
+			<div id="ownedRoomsSection" class="dashboard-card p-6 rounded-lg shadow-lg bg-gray-700">
+				<h2 class="text-2xl font-semibold text-indigo-300 mb-4 text-center">Your Managed Rooms</h2>
+				<div id="ownedRoomsList" class="space-y-6">
+					<!-- Rooms will be listed here by dashboard.js -->
+				</div>
+			</div>
+			
 			<button type="button" id="logout"
-				class="w-full mt-4 mx-auto bg-violet-600 hover:bg-violet-800 text-white font-bold py-2 px-4 rounded focus:outline-none focus:bg-blue-700">
+				class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 focus:ring-offset-gray-800">
 				Log out
 			</button>
 		</main>
