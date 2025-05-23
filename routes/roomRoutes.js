@@ -5,30 +5,24 @@ const {
   deleteRoom,
   updateRoomSettings,
   joinRoomByAccessLink,
-  getOwnedRooms, // Import the new controller function
+  getOwnedRooms,
+  getRoomMessagesPaginated, // Import the new controller function
 } = require("../controller/roomController");
+const { userAuthentication } = require("../middleware/authMiddleware"); // Import actual auth middleware
 
 const router = express.Router();
 
-// Placeholder for authentication middleware
-const authMiddlewarePlaceholder = (req, res, next) => {
-  // This is a placeholder. In a real application, this would verify a JWT, session, etc.
-  // and populate req.user if authentication is successful.
-  console.warn("Using placeholder authentication middleware.");
-  // For testing purposes, you might simulate a user:
-  // req.user = { id: "simulatedUserId123", username: "simulatedUser" };
-  next();
-};
-
-
-router.post("/", authMiddlewarePlaceholder, createRoom); // Added auth placeholder
-router.get("/", getAllListRooms);
-router.delete("/:id", authMiddlewarePlaceholder, deleteRoom); // Added auth placeholder
+// Replace placeholder with actual authentication middleware
+router.post("/", userAuthentication, createRoom);
+router.get("/", getAllListRooms); // Assuming this is a public list, if not, add userAuthentication
+router.delete("/:id", userAuthentication, deleteRoom);
 
 // New routes
-router.put("/:roomId/settings", authMiddlewarePlaceholder, updateRoomSettings);
-router.get("/join/:accessLink", joinRoomByAccessLink);
-router.get('/ownedByMe', authMiddlewarePlaceholder, getOwnedRooms); // Add the new route
+router.put("/:roomId/settings", userAuthentication, updateRoomSettings);
+router.get("/join/:accessLink", joinRoomByAccessLink); // Typically public or uses a one-time token mechanism
+router.get('/owned', userAuthentication, getOwnedRooms); // Changed to /owned and uses actual auth
 
+// Route for paginated messages
+router.get("/:roomName/messages", userAuthentication, getRoomMessagesPaginated);
 
 module.exports = router;

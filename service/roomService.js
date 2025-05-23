@@ -182,24 +182,41 @@ class RoomService {
     }
   }
 
-  async deleteRoom({ id }) {
+  async deleteRoom({ roomId, userId }) { // Updated signature
     try {
-      if (!id) {
+      if (!roomId) {
         throw new StandardError({
           status: 400,
           message: "Room ID is required for deletion.",
         });
       }
-      const result = await this.roomDao.deleteRoom({ id });
+      if (!userId) {
+        throw new StandardError({
+            status: 400,
+            message: "User ID is required for deletion authorization."
+        });
+      }
 
-      // Assuming DAO's deleteRoom returns an object like { acknowledged: true, deletedCount: 1 }
-      // or throws if room not found for deletion.
-      if (!result || result.deletedCount === 0) { // Check if delete was effective
-         throw new StandardError({ status: 404, message: "Room not found or already deleted." });
+      const room = await this.roomDao.getRoomById(roomId);
+      if (!room) {
+        throw new StandardError({ status: 404, message: "Room not found." });
+      }
+
+      if (room.ownerId.toString() !== userId.toString()) {
+        throw new StandardError({ status: 403, message: "User is not authorized to delete this room." });
+      }
+      
+      const result = await this.roomDao.deleteRoom({ id: roomId }); // Pass id to DAO
+
+      if (!result || result.deletedCount === 0) { 
+         // This case should ideally be caught by getRoomById if room doesn't exist,
+         // but keep as a safeguard if DAO behavior changes or for race conditions.
+         throw new StandardError({ status: 404, message: "Room not found or could not be deleted." });
       }
       return { success: true, message: "Room deleted successfully." };
     } catch (error) {
-      console.log(error);
+      // Log the original error for debugging if it's not a StandardError or if more detail is needed
+      console.error("Error in deleteRoom service:", error.message); 
       if (error instanceof StandardError) {
         throw error;
       }

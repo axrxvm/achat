@@ -1,28 +1,26 @@
 const RoomDao = require("../dao/roomDao");
-const RoomService = require("../service/roomService");
+const RoomService =require("../service/roomService");
+const { getMessagesPaginated } = require("../utils/socket"); // Import the helper
+const StandardError = require("../utils/constant/standardError");
+
 
 async function createRoom(req, res, next) {
-  let userId;
-  if (req.user && req.user.id) {
-    userId = req.user.id;
-  } else {
-    userId = "TODO_Implement_Auth_UserId";
-    console.warn("Using placeholder userId in roomController.createRoom");
-  }
+  const userId = req.user.id; // Directly use authenticated user's ID
+  const username = req.user.username; // Directly use authenticated user's username
 
-  const { username, roomName, isLocked, isDiscoverable } = req.body;
+  const { roomName, isLocked, isDiscoverable } = req.body; // Username removed from body
   const { db } = req;
 
   try {
     const roomDao = new RoomDao(db);
     const roomService = new RoomService(roomDao);
     // The service expects userId, username, roomName, isLocked, isDiscoverable
-    const result = await roomService.createRoom({ 
-      userId, 
-      username, // username is still needed by service/DAO for 'createdBy' and user lookup
-      roomName, 
-      isLocked, 
-      isDiscoverable 
+    const result = await roomService.createRoom({
+      userId,
+      username, // Now using authenticated username
+      roomName,
+      isLocked,
+      isDiscoverable
     });
 
     if (result.success) {
@@ -40,13 +38,7 @@ async function createRoom(req, res, next) {
 }
 
 async function updateRoomSettings(req, res, next) {
-  let userId;
-  if (req.user && req.user.id) {
-    userId = req.user.id;
-  } else {
-    userId = "TODO_Implement_Auth_UserId";
-    console.warn("Using placeholder userId in roomController.updateRoomSettings");
-  }
+  const userId = req.user.id; // Directly use authenticated user's ID
 
   const { roomId } = req.params;
   const { isLocked, isDiscoverable } = req.body;
@@ -105,15 +97,16 @@ async function joinRoomByAccessLink(req, res, next) {
 }
 
 async function deleteRoom(req, res, next) {
-  const { id: roomId } = req.params; // Renaming for clarity to match other functions
+  const { id: roomId } = req.params; 
+  const userId = req.user.id; // Get authenticated user's ID
   const { db } = req;
   try {
     const roomDao = new RoomDao(db);
     const roomService = new RoomService(roomDao);
-    // Service method expects { id }, consistent with previous versions
-    const result = await roomService.deleteRoom({ id: roomId }); 
+    // Service method now expects { roomId, userId }
+    const result = await roomService.deleteRoom({ roomId, userId }); 
     if (result.success) {
-      return res.status(200).json({
+      return res.status(200).json({ // OK
         success: true,
         message: result.message, // Service provides "Room deleted successfully."
       });
@@ -151,17 +144,81 @@ module.exports = {
   updateRoomSettings,
   joinRoomByAccessLink,
   getOwnedRooms,
+  getRoomMessagesPaginated, // Export the new function
 };
 
-async function getOwnedRooms(req, res, next) {
-  let userId;
-  if (req.user && req.user.id) {
-    userId = req.user.id;
-  } else {
-    // This is a critical part for security, ensure proper auth in a real app.
-    userId = "TODO_Implement_Auth_UserId"; // Placeholder
-    console.warn("Using placeholder userId in roomController.getOwnedRooms. THIS IS INSECURE.");
+async function getRoomMessagesPaginated(req, res, next) {
+  try {
+    const { roomName } = req.params;
+    let { page, limit } = req.query;
+
+    page = parseInt(page, 10) || 1;
+    limit = parseInt(limit, 10) || 20;
+
+    if (page < 1) page = 1;
+    if (limit < 1) limit = 1;
+    if (limit > 100) limit = 100; // Max limit
+
+    // The getMessagesPaginated function is not async, it reads files synchronously
+    const result = getMessagesPaginated(roomName, page, limit);
+
+    if (result && result.messages) {
+      // If page requested is out of actual available pages, but there are messages.
+      if (page > result.totalPages && result.totalMessages > 0) {
+         return res.status(404).json({
+          success: false,
+          message: `Page ${page} not found. Total pages: ${result.totalPages}.`,
+          data: {
+            totalPages: result.totalPages,
+            totalMessages: result.totalMessages,
+            limit: result.limit
+          }
+        });
+      }
+      
+      return res.status(200).json({
+        success: true,
+        message: "Messages retrieved successfully",
+        data: {
+          messages: result.messages,
+          totalPages: result.totalPages,
+          currentPage: result.currentPage,
+          totalMessages: result.totalMessages,
+          limit: result.limit,
+        },
+      });
+    } else {
+      // This case might be hit if getMessagesPaginated itself has an issue or roomName is invalid
+      // However, getMessagesPaginated is designed to always return an object,
+      // typically with messages: [] if no messages or room not found.
+      // A more specific check for result.totalMessages === 0 might be better here.
+      if (result.totalMessages === 0) {
+        return res.status(200).json({ // 200 is okay if no messages, not necessarily 404
+            success: true,
+            message: "No messages found for this room.",
+            data: {
+                messages: [],
+                totalPages: 0,
+                currentPage: page,
+                totalMessages: 0,
+                limit: limit
+            }
+        });
+      }
+      // Fallback for other unexpected issues from getMessagesPaginated
+      throw new StandardError({ status: 500, message: "Error retrieving messages." });
+    }
+  } catch (error) {
+    // Log the error for server-side inspection if it's not a StandardError already
+    if (!(error instanceof StandardError)) {
+        console.error("Error in getRoomMessagesPaginated controller:", error);
+    }
+    next(error);
   }
+}
+
+async function getOwnedRooms(req, res, next) {
+  const userId = req.user.id; // Directly use authenticated user's ID
 
   const { db } = req;
 

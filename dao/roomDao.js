@@ -97,9 +97,10 @@ class RoomDao {
   }
 
   async findAllListRoom() {
+    // Only list rooms that are discoverable and not logically deleted
     const room = await this.db
       .collection("rooms")
-      .find({ isDeleted: { $exists: false } })
+      .find({ isDiscoverable: true, isDeleted: { $exists: false } })
       .toArray();
     return room;
   }

@@ -1,95 +1,105 @@
 const { userJoin, getCurrentUser, userLeave, getRoomUsers } = require("./user");
 const formatMessage = require("./message");
-// const Message = require('../dao/messageDao'); // MongoDB model removed
 const { format } = require("date-fns"); // Still used by formatMessage utility for live messages
 const fs = require('fs');
 const path = require('path');
+const jwt = require("jsonwebtoken");
+const { JWT_SIGN } = require("../middleware/config/jwtConfig"); // Corrected path
 
 function configureSocket(io) {
   io.on("connection", (socket) => {
     const botName = "AChat Manager";
+    console.log("New client connected:", socket.id);
 
-    console.log("Connected to socket");
-    socket.on("joinRoom", ({ username, roomName }) => {
-      const user = userJoin(socket.id, username, roomName);
+    socket.on('authenticate', (data) => {
+      if (!data || !data.token) {
+        console.log(`Authentication failed for socket ${socket.id}: No token provided`);
+        socket.emit('unauthorized', { message: 'Authentication token not provided.' });
+        socket.disconnect(true);
+        return;
+      }
+      try {
+        const decodedToken = jwt.verify(data.token, JWT_SIGN);
+        socket.user = decodedToken; // Store user info (id, username, role) on the socket
+        console.log(`Socket ${socket.id} authenticated as user: ${socket.user.username} (ID: ${socket.user.id})`);
+        socket.emit('authenticated', { username: socket.user.username, userId: socket.user.id }); // Send confirmation to client
+      } catch (error) {
+        console.log(`Authentication failed for socket ${socket.id}: ${error.message}`);
+        socket.emit('unauthorized', { message: 'Invalid authentication token.' });
+        socket.disconnect(true);
+      }
+    });
 
+    socket.on("joinRoom", ({ roomName }) => { // Username removed from params
+      if (!socket.user) {
+        console.log(`Join room failed for socket ${socket.id}: Socket not authenticated.`);
+        socket.emit('error', { message: 'You must be authenticated to join a room.' });
+        // Optionally disconnect if strict authentication is required before any action
+        // socket.disconnect(true); 
+        return;
+      }
+
+      // Use socket.user.username for userJoin
+      const user = userJoin(socket.id, socket.user.username, roomName);
+
+      if (!user) { // userJoin might return null/undefined if roomName is invalid or other issues
+        console.error(`Failed to join user ${socket.user.username} to room ${roomName}.`);
+        socket.emit('error', { message: `Failed to join room ${roomName}.` });
+        return;
+      }
+      
       socket.join(user.roomName);
 
-      // Load chat history - Commented out as Message model is removed.
-      // JSON file history loading would be implemented here if required.
-      /*
-      Message.find({ roomName: user.roomName })
-        .sort({ timestamp: 1 })
-        .lean()
-        .exec((err, messages) => {
-          if (err) {
-            console.error("Error fetching chat history:", err);
-            socket.emit("loadHistory", []); // Emit empty history on error
-            return;
-          }
-          if (messages && messages.length > 0) {
-            const formattedMessages = messages.map(msg => ({
-              username: msg.username,
-              text: msg.text,
-              time: format(new Date(msg.timestamp), "h:mm a")
-            }));
-            socket.emit("loadHistory", formattedMessages);
-          } else {
-            socket.emit("loadHistory", []); // Emit empty history if no messages found
-          }
-        });
-      */
-      // Load chat history from JSON file
       const chatHistory = _loadChatHistoryFromJson(user.roomName);
       socket.emit("loadHistory", chatHistory);
 
-
-      // Welcome current user
       socket.emit(
         "message",
         formatMessage(botName, "Welcome to AChat App, Let's talk !")
       );
 
-      // Broadcast when a user connects
       socket.broadcast
         .to(user.roomName)
         .emit(
           "welcomeMessage",
-          formatMessage(botName, `${user.username} has joined the chat`)
+          formatMessage(botName, `${user.username} has joined the chat`) // Username from socket.user
         );
 
-      // Send users and room info
       io.to(user.roomName).emit("roomUsers", {
         roomName: user.roomName,
         users: getRoomUsers(user.roomName),
       });
     });
 
-    // Listen for chatMessage
     socket.on("chatMessage", (msg) => {
-      const user = getCurrentUser(socket.id);
+      if (!socket.user) {
+        console.log(`Chat message failed for socket ${socket.id}: Socket not authenticated.`);
+        socket.emit('error', { message: 'You must be authenticated to send messages.' });
+        return;
+      }
+      const user = getCurrentUser(socket.id); // This still relies on the local users array managed by user.js
 
       if (user && user.roomName) {
         const messageData = {
-          username: user.username,
+          username: socket.user.username, // Correctly use authenticated user's username for saving
           text: msg,
           timestamp: new Date().toISOString()
         };
         _saveMessageToJson(user.roomName, messageData);
-        // The actual emitting of the message should happen regardless of save success for real-time feel
-        io.to(user.roomName).emit("message", formatMessage(user.username, msg));
+        io.to(user.roomName).emit("message", formatMessage(socket.user.username, msg)); // Use socket.user.username for emitting
       } else {
         if (!user) {
-            console.error("chatMessage: User not found for socket id:", socket.id);
+            console.error("chatMessage: User not found in local tracking for socket id:", socket.id);
         } else {
             console.error("chatMessage: User found but roomName is missing for socket id:", socket.id);
         }
+        socket.emit('error', { message: 'Could not send message. User or room not found.' });
       }
     });
 
-    // Runs when client disconnects
     socket.on("disconnect", () => {
-      const user = userLeave(socket.id);
+      console.log(`Client disconnected: ${socket.id}${socket.user ? ` (User: ${socket.user.username})` : ''}`);
+      const user = userLeave(socket.id); // userLeave needs to be aware of socket.id
 
       if (user) {
         io.to(user.roomName).emit(
@@ -97,7 +107,6 @@ function configureSocket(io) {
           formatMessage(botName, `${user.username} has left the chat`)
         );
 
-        // Send users and room info
         io.to(user.roomName).emit("roomUsers", {
           roomName: user.roomName,
           users: getRoomUsers(user.roomName),
@@ -133,6 +142,8 @@ function _loadChatHistoryFromJson(roomName) {
 
 // Helper function to save a message to a JSON file
 function _saveMessageToJson(roomName, messageData) {
+  // Ensure username in messageData is consistently from socket.user if possible,
+  // though here it's passed in. For new messages, ensure it's from socket.user.username.
   const chatsDir = path.join(__dirname, '..', 'db', 'chats');
   const roomFilePath = path.join(chatsDir, `${roomName}.json`);
 
@@ -174,8 +185,46 @@ function _saveMessageToJson(roomName, messageData) {
   }
 }
 
+// New helper function for paginating messages
+function getMessagesPaginated(roomName, page = 1, limit = 20) {
+  const allMessages = _loadChatHistoryFromJson(roomName);
+  const totalMessages = allMessages.length;
+
+  if (totalMessages === 0) {
+    return { messages: [], totalMessages, totalPages: 0, currentPage: page, limit };
+  }
+
+  const totalPages = Math.ceil(totalMessages / limit);
+  // Ensure page is within bounds
+  const currentPage = Math.max(1, Math.min(page, totalPages));
+
+  // Calculate start and end index for slicing from the end of the array (oldest first)
+  // Page 1 should be the newest messages, which are at the end of the 'allMessages' array.
+  let startIndex = totalMessages - (currentPage * limit);
+  let endIndex = totalMessages - ((currentPage - 1) * limit);
+
+  // Ensure startIndex is not negative
+  startIndex = Math.max(0, startIndex);
+  
+  // Slice the array to get the messages for the current page.
+  // These messages will be in chronological order (oldest to newest within the page).
+  const messagesForPage = allMessages.slice(startIndex, endIndex);
+
+  // Reverse the messages for the page to have newest first, as typically expected in chat UI.
+  const reversedMessagesForPage = messagesForPage.reverse();
+
+  return {
+    messages: reversedMessagesForPage,
+    totalMessages,
+    totalPages,
+    currentPage,
+    limit
+  };
+}
+
 module.exports = {
     configureSocket,
-    _loadChatHistoryFromJson, // Export for testing
-    _saveMessageToJson // Export for testing
+    _loadChatHistoryFromJson, 
+    _saveMessageToJson,
+    getMessagesPaginated // Export the new function
 };
