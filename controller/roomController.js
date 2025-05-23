@@ -119,8 +119,6 @@ async function deleteRoom(req, res, next) {
       });
     } 
     // No explicit else needed if service throws StandardError for failures
-    }
-    // No explicit else needed if service throws StandardError for failures
   } catch (error) {
     next(error);
   }
