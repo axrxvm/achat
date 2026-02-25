@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AChat</title>
+    <link rel="icon" href="./img/favicon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./css/styles.css" />
+  </head>
+  <body>
+    <div id="auth-view" class="auth-view">
+      <div class="auth-card">
+        <div class="auth-brand">AChat</div>
+        <h1>Your Rooms, Live</h1>
+        <p>Connect, collaborate, in real-time</p>
+        <button id="oauth-login" class="primary-button">Continue </button>
+      </div>
+    </div>
+
+    <div id="app-view" class="app-view hidden">
+      <aside id="room-panel" class="room-panel">
+        <header class="room-panel__header">
+          <h2>Rooms</h2>
+          <span id="user-chip" class="user-chip"></span>
+        </header>
+
+        <section id="room-list" class="room-list"></section>
+
+        <section class="room-actions">
+          <button id="open-room-modal" class="secondary-button">Create / Join Room</button>
+          <p class="room-actions__hint">Private rooms require owner approval.</p>
+        </section>
+
+        <footer class="room-panel__footer">
+          <form id="display-name-form" class="stack-form profile-form" autocomplete="off">
+            <label for="display-name-input">Display Name</label>
+            <div class="inline-field">
+              <input
+                id="display-name-input"
+                name="displayName"
+                placeholder="Your display name"
+                maxlength="32"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                required
+              />
+              <button type="submit" class="secondary-button">Save</button>
+            </div>
+          </form>
+
+          <button id="logout" class="secondary-button logout">Logout</button>
+        </footer>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="chat-header">
+          <div>
+            <h2 id="active-room-name">Select a room</h2>
+            <p id="active-room-meta">No room selected</p>
+          </div>
+
+          <div class="chat-header__actions">
+            <div class="mobile-action-group">
+              <button id="mobile-rooms-toggle" type="button" class="secondary-button mobile-toggle">Rooms</button>
+              <button id="mobile-members-toggle" type="button" class="secondary-button mobile-toggle">Members</button>
+            </div>
+            <label id="privacy-toggle-wrap" class="privacy-toggle hidden" title="Only owner can change privacy">
+              <input id="privacy-toggle" type="checkbox" />
+              <span>Private</span>
+            </label>
+            <button id="leave-room" class="secondary-button danger hidden">Leave Room</button>
+          </div>
+        </header>
+
+        <section id="message-list" class="message-list"></section>
+
+        <form id="message-form" class="message-form" autocomplete="off">
+          <input
+            id="message-input"
+            name="message"
+            placeholder="Message"
+            maxlength="2000"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            disabled
+          />
+          <button type="submit" id="send-message" class="primary-button" disabled>Send</button>
+        </form>
+      </main>
+
+      <aside id="member-panel" class="member-panel">
+        <header>
+          <h3>Members</h3>
+          <p id="member-meta" class="member-meta"></p>
+        </header>
+        <ul id="member-list" class="member-list"></ul>
+      </aside>
+      <button id="mobile-drawer-backdrop" type="button" class="mobile-drawer-backdrop hidden" aria-label="Close side panels"></button>
+    </div>
+
+    <div id="room-modal" class="room-modal hidden" aria-hidden="true">
+      <div id="room-modal-backdrop" class="room-modal__backdrop"></div>
+      <section class="room-modal__panel" role="dialog" aria-modal="true" aria-labelledby="room-modal-title">
+        <header class="room-modal__header">
+          <h2 id="room-modal-title">Create or Join a Room</h2>
+          <button id="room-modal-close" class="modal-close" type="button" aria-label="Close room modal">×</button>
+        </header>
+
+        <p class="room-modal__subtitle">Private rooms require owner approval before chat access.</p>
+
+        <div class="room-modal__forms">
+          <form id="create-room-form" class="stack-form" autocomplete="off">
+            <label for="new-room-name">Create Room</label>
+            <div class="inline-field">
+              <input
+                id="new-room-name"
+                name="name"
+                placeholder="Project Standup"
+                maxlength="48"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                required
+              />
+              <button type="submit" class="primary-button">Create</button>
+            </div>
+            <label class="checkbox-row" for="new-room-private">
+              <input id="new-room-private" name="isPrivate" type="checkbox" />
+              <span>Private room (manual approvals)</span>
+            </label>
+          </form>
+
+          <form id="join-room-form" class="stack-form" autocomplete="off">
+            <label for="join-room-id">Join with 4-digit ID</label>
+            <div class="inline-field">
+              <input
+                id="join-room-id"
+                name="roomId"
+                inputmode="numeric"
+                pattern="[0-9]{4}"
+                placeholder="1234"
+                maxlength="4"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                required
+              />
+              <button type="submit" class="secondary-button">Join</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+    <div id="member-context-menu" class="member-context-menu hidden" role="menu" aria-hidden="true">
+      <button id="member-context-kick" class="member-context-menu__item" type="button" role="menuitem">Kick</button>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="./js/app.js"></script>
+  </body>
+</html>

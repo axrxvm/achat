@@ -1,0 +1,24 @@
+{
+  "name": "achat",
+  "version": "0.2.0",
+  "description": "a real time chat application.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "bun run src/index.js",
+    "dev": "bun --watch src/index.js"
+  },
+  "keywords": [
+    "bun",
+    "express",
+    "socket.io",
+    "oauth",
+    "chat"
+  ],
+  "author": "Aarav Mehta",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^8.2.0",
+    "express": "^4.17.1",
+    "socket.io": "^2.3.0"
+  }
+}
