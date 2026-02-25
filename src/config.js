@@ -1,8 +1,10 @@
 const path = require("path");
 
 const PORT = Number(process.env.PORT || 8070);
-const HOST = process.env.HOST || "127.0.0.1";
-const APP_BASE_URL = process.env.APP_BASE_URL || `http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}`;
+const HOST = process.env.HOST || "0.0.0.0";
+const APP_BASE_URL = process.env.APP_BASE_URL
+  ? String(process.env.APP_BASE_URL).trim().replace(/\/+$/, "")
+  : "";
 const OAUTH_BASE = process.env.ALABS_WORKER_BASE || "https://oauth2.axrxvm.workers.dev";
 const OAUTH_APP_ID = process.env.ALABS_APP_ID || "AChat";
 const OAUTH_PROVIDERS = (process.env.ALABS_PROVIDERS || "discord,google,github")

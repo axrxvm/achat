@@ -6,6 +6,7 @@ const socketio = require("socket.io");
 
 const config = require("./config");
 const store = require("./store");
+const { getRequestBaseUrl } = require("./lib/baseUrl");
 const { parseCookies, setSessionCookie, clearSessionCookie } = require("./lib/cookies");
 const { decodeJwtPayload } = require("./lib/jwt");
 const { createRequireAuth } = require("./middleware/requireAuth");
@@ -22,6 +23,7 @@ const io = socketio(server, {
   }
 });
 
+app.set("trust proxy", true);
 app.use(express.json());
 app.use(express.static(config.PUBLIC_DIR));
 
@@ -53,13 +55,20 @@ registerRoutes({
   app,
   io,
   requireAuth,
-  fetchSignupUrl: () =>
-    fetchSignupUrl({
+  fetchSignupUrl: req => {
+    const requestBaseUrl = getRequestBaseUrl({
+      req,
+      appBaseUrl: config.APP_BASE_URL,
+      port: config.PORT
+    });
+
+    return fetchSignupUrl({
       oauthBase: config.OAUTH_BASE,
       oauthAppId: config.OAUTH_APP_ID,
-      appBaseUrl: config.APP_BASE_URL,
+      redirectUrl: `${requestBaseUrl}/auth/callback`,
       oauthProviders: config.OAUTH_PROVIDERS
-    }),
+    });
+  },
   decodeJwtPayload,
   setSessionCookie: (res, value) =>
     setSessionCookie(res, config.SESSION_COOKIE, value, config.SESSION_COOKIE_MAX_AGE_SECONDS),
@@ -72,7 +81,8 @@ const start = async () => {
   await store.ensureStore();
 
   server.listen(config.PORT, config.HOST, () => {
-    console.log(`[INFO] Running on ${config.APP_BASE_URL}`);
+    const baseUrl = config.APP_BASE_URL || `http://${config.HOST === "0.0.0.0" ? "localhost" : config.HOST}:${config.PORT}`;
+    console.log(`[INFO] Running on ${baseUrl}`);
   });
 };
 

@@ -1,4 +1,4 @@
-const fetchSignupUrl = async ({ oauthBase, oauthAppId, appBaseUrl, oauthProviders }) => {
+const fetchSignupUrl = async ({ oauthBase, oauthAppId, redirectUrl, oauthProviders }) => {
   const response = await fetch(`${oauthBase}/init`, {
     method: "POST",
     headers: {
@@ -6,7 +6,7 @@ const fetchSignupUrl = async ({ oauthBase, oauthAppId, appBaseUrl, oauthProvider
     },
     body: JSON.stringify({
       app_id: oauthAppId,
-      redirect: `${appBaseUrl}/auth/callback`,
+      redirect: redirectUrl,
       providers: oauthProviders
     })
   });

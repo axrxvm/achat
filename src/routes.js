@@ -11,7 +11,7 @@ const registerRoutes = ({
 }) => {
   app.get("/auth/login", async (req, res) => {
     try {
-      const signupUrl = await fetchSignupUrl();
+      const signupUrl = await fetchSignupUrl(req);
       res.redirect(signupUrl);
     } catch (error) {
       console.error("[ERROR] OAuth login redirect failed", error);
