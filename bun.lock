@@ -8,6 +8,7 @@
         "dotenv": "^8.2.0",
         "express": "^4.17.1",
         "mongodb": "^6.19.0",
+        "node-catbox": "^4.2.0",
         "socket.io": "^2.3.0",
       },
     },
@@ -148,6 +149,8 @@
     "ms": ["ms@2.0.0", "", {}, "sha512-Tpp60P6IUJDTuOq/5Z8cdskzJujfwqfOTkrwIwj7IRISpnkJnT6SyJ4PCPnGMoFjC9ddhal5KVIYtAt97ix05A=="],
 
     "negotiator": ["negotiator@0.6.3", "", {}, "sha512-+EUsqGPLsM+j/zdChZjsnX51g4XrHFOIXwfnCVPGlQk/k5giakcKsuxCObBRu6DSm9opw/O6slWbJdghQM4bBg=="],
+
+    "node-catbox": ["node-catbox@4.2.0", "", {}, "sha512-7WPiO0i3N1J1reL3p0tgdJaKSsFZjgUzdod3UTWUT8cnh2K2NbvCVe2XpuNI33jiGws4n2AHURqITYCP0V2Qnw=="],
 
     "object-inspect": ["object-inspect@1.13.4", "", {}, "sha512-W67iLl4J2EXEGTbfeHCffrjDfitvLANg0UlX3wFUUSTx92KXRFegMHUVgSqE+wvhAbi4WqjGg9czysTV2Epbew=="],
 

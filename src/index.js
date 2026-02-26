@@ -24,7 +24,7 @@ const io = socketio(server, {
 });
 
 app.set("trust proxy", true);
-app.use(express.json());
+app.use(express.json({ limit: config.REQUEST_JSON_LIMIT }));
 app.use(express.static(config.PUBLIC_DIR));
 
 const requireAuth = createRequireAuth({

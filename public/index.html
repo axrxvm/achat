@@ -43,24 +43,7 @@
         </section>
 
         <footer class="room-panel__footer">
-          <form id="display-name-form" class="stack-form profile-form" autocomplete="off">
-            <label for="display-name-input">Display Name</label>
-            <div class="inline-field">
-              <input
-                id="display-name-input"
-                name="displayName"
-                placeholder="Your display name"
-                maxlength="32"
-                autocomplete="off"
-                autocapitalize="off"
-                autocorrect="off"
-                spellcheck="false"
-                required
-              />
-              <button type="submit" class="secondary-button">Save</button>
-            </div>
-          </form>
-
+          <button id="open-settings" class="secondary-button">Settings</button>
           <button id="logout" class="secondary-button logout">Logout</button>
         </footer>
       </aside>
@@ -78,30 +61,55 @@
               <button id="mobile-rooms-toggle" type="button" class="secondary-button mobile-toggle">Rooms</button>
               <button id="mobile-members-toggle" type="button" class="secondary-button mobile-toggle">Members</button>
             </div>
-            <label id="privacy-toggle-wrap" class="privacy-toggle hidden" title="Only owner can change privacy">
-              <input id="privacy-toggle" type="checkbox" />
-              <span>Private</span>
-            </label>
-            <button id="leave-room" class="secondary-button danger hidden">Leave Room</button>
+            <div class="chat-actions-menu-wrap">
+              <button
+                id="chat-actions-toggle"
+                type="button"
+                class="secondary-button chat-actions-toggle"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="chat-actions-menu"
+                title="Room actions"
+              >
+                ⋯
+              </button>
+              <div id="chat-actions-menu" class="chat-actions-menu hidden" role="menu" aria-hidden="true">
+                <label id="privacy-toggle-wrap" class="privacy-toggle hidden" title="Only owner can change privacy">
+                  <input id="privacy-toggle" type="checkbox" />
+                  <span>Private</span>
+                </label>
+                <label id="discover-toggle-wrap" class="privacy-toggle hidden" title="Only owner can change discoverability">
+                  <input id="discover-toggle" type="checkbox" />
+                  <span>Discoverable</span>
+                </label>
+                <button id="leave-room" class="secondary-button danger hidden" type="button">Leave Room</button>
+                <button id="delete-room" class="secondary-button danger hidden" type="button">Delete Room</button>
+                <button id="chat-menu-settings" class="secondary-button" type="button">User Settings</button>
+              </div>
+            </div>
           </div>
         </header>
 
         <section id="message-list" class="message-list"></section>
 
         <form id="message-form" class="message-form" autocomplete="off">
-          <input
+          <button id="attach-files" type="button" class="secondary-button attach-button" title="Add attachments" disabled>+</button>
+          <input id="attachment-input" type="file" multiple class="hidden-file-input" />
+          <textarea
             id="message-input"
             name="message"
-            placeholder="Message the room"
+            placeholder="Message the room (Enter to send, Ctrl+Enter for newline)"
             maxlength="2000"
             autocomplete="off"
             autocapitalize="off"
             autocorrect="off"
             spellcheck="false"
+            rows="1"
             disabled
-          />
+          ></textarea>
           <button type="submit" id="send-message" class="primary-button" disabled>Send</button>
         </form>
+        <div id="composer-attachment-list" class="composer-attachment-list hidden"></div>
       </main>
 
       <aside id="member-panel" class="member-panel">
@@ -145,6 +153,10 @@
               <input id="new-room-private" name="isPrivate" type="checkbox" />
               <span>Private room (manual approvals)</span>
             </label>
+            <label class="checkbox-row" for="new-room-discoverable">
+              <input id="new-room-discoverable" name="isDiscoverable" type="checkbox" checked />
+              <span>List in room discovery</span>
+            </label>
           </form>
 
           <form id="join-room-form" class="stack-form" autocomplete="off">
@@ -167,12 +179,70 @@
             </div>
           </form>
         </div>
+
+        <section class="room-discovery">
+          <div class="room-discovery__header">
+            <h3>Discover Rooms</h3>
+            <button id="refresh-discovery" type="button" class="secondary-button">Refresh</button>
+          </div>
+          <p class="room-discovery__hint">Discoverable rooms appear here. Private rooms can still require owner approval.</p>
+          <div id="discovery-room-list" class="discovery-room-list"></div>
+        </section>
+      </section>
+    </div>
+
+    <div id="settings-modal" class="room-modal hidden" aria-hidden="true">
+      <div id="settings-modal-backdrop" class="room-modal__backdrop"></div>
+      <section class="room-modal__panel settings-modal__panel" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+        <header class="room-modal__header">
+          <h2 id="settings-modal-title">User Settings</h2>
+          <button id="settings-modal-close" class="modal-close" type="button" aria-label="Close settings">×</button>
+        </header>
+
+        <div class="settings-sections">
+          <form id="display-name-form" class="stack-form settings-card" autocomplete="off">
+            <label for="display-name-input">Display Name</label>
+            <div class="inline-field">
+              <input
+                id="display-name-input"
+                name="displayName"
+                placeholder="Your display name"
+                maxlength="32"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                required
+              />
+              <button type="submit" class="primary-button">Save</button>
+            </div>
+          </form>
+
+          <section class="settings-card">
+            <h3>Manage Rooms</h3>
+            <p class="settings-note">Leave rooms you joined or delete rooms you own.</p>
+            <div id="settings-room-list" class="settings-room-list"></div>
+          </section>
+
+          <section class="settings-card danger">
+            <h3>Delete Account</h3>
+            <p class="settings-note">
+              This permanently removes your account. Past messages will remain in rooms under
+              <strong>Deleted User</strong>.
+            </p>
+            <button id="delete-account" type="button" class="secondary-button danger">Delete Account</button>
+          </section>
+        </div>
       </section>
     </div>
 
     <div id="toast" class="toast hidden"></div>
     <div id="member-context-menu" class="member-context-menu hidden" role="menu" aria-hidden="true">
+      <button id="member-context-transfer" class="member-context-menu__item" type="button" role="menuitem">Transfer Ownership</button>
       <button id="member-context-kick" class="member-context-menu__item" type="button" role="menuitem">Kick</button>
+    </div>
+    <div id="message-context-menu" class="member-context-menu hidden" role="menu" aria-hidden="true">
+      <button id="message-context-delete" class="member-context-menu__item" type="button" role="menuitem">Delete Message</button>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>

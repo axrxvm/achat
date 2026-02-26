@@ -10,6 +10,7 @@ const DATA_FILE = path.join(DATA_DIR, "store.json");
 const MESSAGE_ID_REGEX = /^\d{10}$/;
 const DEFAULT_MAIN_DB_NAME = "achat_main";
 const DEFAULT_MESSAGE_DB_NAME = "achat_messages";
+const DELETED_USER_OAUTH_KEY = "system:deleted-user";
 
 const EMPTY_STORE = {
   users: [],
@@ -81,6 +82,7 @@ const normalizeStore = value => {
 
     room.pendingUserIds = room.pendingUserIds.filter(userId => !room.memberUserIds.includes(userId));
     room.isPrivate = Boolean(room.isPrivate);
+    room.isDiscoverable = room.isDiscoverable !== false;
     room.createdAt = room.createdAt || nowIso();
     room.updatedAt = room.updatedAt || room.createdAt;
 
@@ -313,6 +315,7 @@ const ensureStore = async () => {
 const findUserById = userId => state.users.find(user => user.id === String(userId));
 const findSessionById = sessionId => state.sessions.find(session => session.id === String(sessionId));
 const findRoomById = roomId => state.rooms.find(room => room.id === String(roomId));
+const findDeletedUser = () => state.users.find(user => user.oauthKey === DELETED_USER_OAUTH_KEY);
 const toTimestamp = value => {
   const time = new Date(value || 0).getTime();
   return Number.isFinite(time) ? time : 0;
@@ -322,13 +325,38 @@ const touchRoom = room => {
   room.updatedAt = nowIso();
 };
 
+const ensureDeletedUser = () => {
+  let deletedUser = findDeletedUser();
+  if (deletedUser) {
+    return deletedUser;
+  }
+
+  const id = generateUniqueNumericId(7, new Set(state.users.map(user => user.id)));
+  deletedUser = {
+    id,
+    oauthKey: DELETED_USER_OAUTH_KEY,
+    oauthSub: "deleted-user",
+    oauthProvider: "system",
+    oauthProviderId: "",
+    oauthEmail: null,
+    displayName: "Deleted User",
+    displayNameCustom: false,
+    avatarUrl: null,
+    createdAt: nowIso(),
+    lastLoginAt: nowIso()
+  };
+
+  state.users.push(deletedUser);
+  return deletedUser;
+};
+
 const formatMessageForClient = message => {
   const author = findUserById(message.userId);
   return {
     id: message.id,
     roomId: message.roomId,
     userId: message.userId,
-    username: author?.displayName || "Unknown",
+    username: author?.displayName || "Deleted User",
     avatarUrl: author?.avatarUrl || null,
     text: message.text,
     createdAt: message.createdAt
@@ -473,7 +501,7 @@ const deleteSession = async sessionId => {
   }
 };
 
-const createRoom = async ({ name, ownerUserId, isPrivate = false }) => {
+const createRoom = async ({ name, ownerUserId, isPrivate = false, isDiscoverable = true }) => {
   const normalizedName = sanitizeRoomName(name);
   if (!normalizedName) {
     throw new Error("Room name is required");
@@ -492,6 +520,7 @@ const createRoom = async ({ name, ownerUserId, isPrivate = false }) => {
     memberUserIds: [ownerId],
     pendingUserIds: [],
     isPrivate: Boolean(isPrivate),
+    isDiscoverable: Boolean(isDiscoverable),
     createdAt: nowIso(),
     updatedAt: nowIso()
   };
@@ -580,6 +609,143 @@ const leaveRoom = async ({ roomId, userId }) => {
   return clone(room);
 };
 
+const transferRoomOwnership = async ({ roomId, ownerUserId, targetUserId }) => {
+  const room = findRoomById(roomId);
+  if (!room) {
+    throw new Error("Room not found");
+  }
+
+  const normalizedOwnerId = String(ownerUserId);
+  const normalizedTargetId = String(targetUserId);
+
+  if (room.ownerUserId !== normalizedOwnerId) {
+    throw new Error("Only room owner can transfer ownership");
+  }
+
+  if (normalizedTargetId === room.ownerUserId) {
+    throw new Error("Target user is already the room owner");
+  }
+
+  if (!room.memberUserIds.includes(normalizedTargetId)) {
+    throw new Error("Target user must be an approved room member");
+  }
+
+  room.ownerUserId = normalizedTargetId;
+  touchRoom(room);
+  await persistRoom(room);
+
+  return clone(room);
+};
+
+const deleteRoom = async ({ roomId, ownerUserId }) => {
+  const room = findRoomById(roomId);
+  if (!room) {
+    throw new Error("Room not found");
+  }
+
+  const normalizedOwnerId = String(ownerUserId);
+  if (room.ownerUserId !== normalizedOwnerId) {
+    throw new Error("Only room owner can delete room");
+  }
+
+  const impactedUserIds = new Set(getRoomUserIds(room.id));
+  state.rooms = state.rooms.filter(entry => entry.id !== room.id);
+  state.messages = state.messages.filter(message => message.roomId !== room.id);
+  await syncStateToMongo();
+
+  return {
+    roomId: room.id,
+    impactedUserIds: [...impactedUserIds]
+  };
+};
+
+const deleteUserAccount = async ({ userId }) => {
+  const normalizedUserId = String(userId);
+  const user = findUserById(normalizedUserId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  const ownedRooms = state.rooms.filter(room => room.ownerUserId === normalizedUserId);
+  if (ownedRooms.length > 0) {
+    throw new Error("Transfer ownership or delete your owned rooms before deleting your account");
+  }
+
+  const hasAuthoredMessages = state.messages.some(message => message.userId === normalizedUserId);
+  const deletedUser = hasAuthoredMessages ? ensureDeletedUser() : null;
+  if (deletedUser && deletedUser.id === normalizedUserId) {
+    throw new Error("Cannot delete placeholder user");
+  }
+
+  const affectedRoomIds = new Set();
+  const affectedUserIds = new Set();
+
+  for (const room of state.rooms) {
+    const wasInRoom =
+      room.ownerUserId === normalizedUserId ||
+      room.memberUserIds.includes(normalizedUserId) ||
+      room.pendingUserIds.includes(normalizedUserId);
+    if (!wasInRoom) {
+      continue;
+    }
+
+    const previousParticipants = new Set([...room.memberUserIds, ...room.pendingUserIds, room.ownerUserId].filter(Boolean));
+    for (const participantId of previousParticipants) {
+      if (participantId !== normalizedUserId) {
+        affectedUserIds.add(String(participantId));
+      }
+    }
+
+    room.pendingUserIds = room.pendingUserIds.filter(entry => entry !== normalizedUserId);
+    room.memberUserIds = room.memberUserIds.filter(entry => entry !== normalizedUserId);
+
+    if (room.ownerUserId === normalizedUserId) {
+      room.ownerUserId = room.memberUserIds[0] || null;
+      if (!room.ownerUserId && room.pendingUserIds.length > 0) {
+        const promotedUserId = room.pendingUserIds.shift();
+        room.memberUserIds.push(promotedUserId);
+        room.ownerUserId = promotedUserId;
+      }
+    }
+
+    if (!room.ownerUserId && room.memberUserIds.length > 0) {
+      room.ownerUserId = room.memberUserIds[0];
+    }
+
+    if (room.memberUserIds.length === 0 && room.pendingUserIds.length === 0) {
+      state.messages = state.messages.filter(message => message.roomId !== room.id);
+      continue;
+    }
+
+    touchRoom(room);
+    affectedRoomIds.add(String(room.id));
+    for (const participantId of getRoomUserIds(room.id)) {
+      if (participantId !== normalizedUserId) {
+        affectedUserIds.add(String(participantId));
+      }
+    }
+  }
+
+  state.rooms = state.rooms.filter(room => room.memberUserIds.length > 0 || room.pendingUserIds.length > 0);
+  state.sessions = state.sessions.filter(session => session.userId !== normalizedUserId);
+
+  if (deletedUser) {
+    for (const message of state.messages) {
+      if (message.userId === normalizedUserId) {
+        message.userId = deletedUser.id;
+      }
+    }
+  }
+
+  state.users = state.users.filter(entry => entry.id !== normalizedUserId);
+  await syncStateToMongo();
+
+  return {
+    affectedRoomIds: [...affectedRoomIds],
+    affectedUserIds: [...affectedUserIds]
+  };
+};
+
 const kickMember = async ({ roomId, ownerUserId, targetUserId }) => {
   const room = findRoomById(roomId);
   if (!room) {
@@ -622,6 +788,24 @@ const setRoomPrivacy = async ({ roomId, ownerUserId, isPrivate }) => {
   }
 
   room.isPrivate = Boolean(isPrivate);
+  touchRoom(room);
+  await persistRoom(room);
+
+  return clone(room);
+};
+
+const setRoomDiscoverability = async ({ roomId, ownerUserId, isDiscoverable }) => {
+  const room = findRoomById(roomId);
+  if (!room) {
+    throw new Error("Room not found");
+  }
+
+  const normalizedOwnerId = String(ownerUserId);
+  if (room.ownerUserId !== normalizedOwnerId) {
+    throw new Error("Only room owner can update discoverability");
+  }
+
+  room.isDiscoverable = Boolean(isDiscoverable);
   touchRoom(room);
   await persistRoom(room);
 
@@ -683,10 +867,7 @@ const rejectPendingUser = async ({ roomId, ownerUserId, targetUserId }) => {
 const addMessage = async ({ roomId, userId, text }) => {
   const room = findRoomById(roomId);
   const normalizedUserId = String(userId);
-  const normalizedText = String(text || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 2000);
+  const normalizedText = String(text || "").replace(/\r\n/g, "\n").slice(0, 2000).trim();
 
   if (!room) {
     throw new Error("Room not found");
@@ -713,6 +894,35 @@ const addMessage = async ({ roomId, userId, text }) => {
   await persistMessageAndRoom({ message, room });
 
   return formatMessageForClient(message);
+};
+
+const deleteMessage = async ({ roomId, messageId, requesterUserId }) => {
+  const room = findRoomById(roomId);
+  if (!room) {
+    throw new Error("Room not found");
+  }
+
+  const normalizedRequesterId = String(requesterUserId);
+  const normalizedMessageId = String(messageId);
+  const message = state.messages.find(entry => entry.id === normalizedMessageId);
+  if (!message || String(message.roomId) !== String(room.id)) {
+    throw new Error("Message not found");
+  }
+
+  const canDelete =
+    String(message.userId) === normalizedRequesterId || String(room.ownerUserId || "") === normalizedRequesterId;
+  if (!canDelete) {
+    throw new Error("You are not allowed to delete this message");
+  }
+
+  state.messages = state.messages.filter(entry => entry.id !== normalizedMessageId);
+  touchRoom(room);
+  await syncStateToMongo();
+
+  return {
+    roomId: String(room.id),
+    messageId: normalizedMessageId
+  };
 };
 
 const getMessagesForRoom = (roomId, limit = 200) => {
@@ -799,6 +1009,7 @@ const listRoomsForUser = userId => {
         id: room.id,
         name: room.name,
         isPrivate: Boolean(room.isPrivate),
+        isDiscoverable: room.isDiscoverable !== false,
         ownerUserId: room.ownerUserId,
         ownerDisplayName: owner?.displayName || "None",
         memberCount: room.memberUserIds.length,
@@ -814,6 +1025,38 @@ const listRoomsForUser = userId => {
               createdAt: latestMessage.createdAt
             }
           : null
+      };
+    })
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+};
+
+const listDiscoverableRoomsForUser = userId => {
+  const normalizedUserId = String(userId);
+
+  return state.rooms
+    .filter(room => {
+      if (room.memberUserIds.includes(normalizedUserId) || room.pendingUserIds.includes(normalizedUserId)) {
+        return true;
+      }
+
+      return room.isDiscoverable !== false;
+    })
+    .map(room => {
+      const owner = findUserById(room.ownerUserId);
+      const accessStatus = getRoomAccessForUser(room.id, normalizedUserId);
+      return {
+        id: room.id,
+        name: room.name,
+        isPrivate: Boolean(room.isPrivate),
+        isDiscoverable: room.isDiscoverable !== false,
+        ownerUserId: room.ownerUserId,
+        ownerDisplayName: owner?.displayName || "Unknown",
+        memberCount: room.memberUserIds.length,
+        pendingCount: room.pendingUserIds.length,
+        accessStatus,
+        canJoin: accessStatus === "none",
+        createdAt: room.createdAt,
+        updatedAt: room.updatedAt
       };
     })
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
@@ -874,7 +1117,10 @@ module.exports = {
   approvePendingUser,
   createRoom,
   createSession,
+  deleteMessage,
+  deleteRoom,
   deleteSession,
+  deleteUserAccount,
   ensureStore,
   getMessagesForRoom,
   getRoomAccessForUser,
@@ -886,8 +1132,11 @@ module.exports = {
   kickMember,
   joinRoom,
   leaveRoom,
+  listDiscoverableRoomsForUser,
   listRoomsForUser,
   rejectPendingUser,
+  transferRoomOwnership,
+  setRoomDiscoverability,
   setRoomPrivacy,
   touchSession,
   updateUserDisplayName,

@@ -270,7 +270,7 @@ const setupRealtime = ({
         const message = await addMessage({ roomId, userId, text });
         io.to(`room:${roomId}`).emit("message:new", message);
         sendRoomsUpdateForRoomUsers(roomId);
-        callback({ ok: true });
+        callback({ ok: true, message });
       } catch (error) {
         callback({ error: error.message || "Unable to send message" });
       }
