@@ -6,6 +6,9 @@ const state = {
   membersByRoom: new Map(),
   pendingByRoom: new Map(),
   messagesByRoom: new Map(),
+  messageHasMoreByRoom: new Map(),
+  messageLoadingOlderByRoom: new Set(),
+  typingByRoom: new Map(),
   activeRoomCanAccess: false,
   activeRoomAccessStatus: "none"
 };
@@ -104,9 +107,16 @@ const messageSendQueue = [];
 let messageSendBusy = false;
 let chatActionsMenuOpen = false;
 let composerAttachments = [];
+let localTypingRoomId = null;
+let localTypingLastSentAt = 0;
 
 const MAX_COMPOSER_ATTACHMENTS = 4;
 const MAX_COMPOSER_ATTACHMENT_BYTES = 12 * 1024 * 1024;
+const MESSAGE_FETCH_LIMIT = 80;
+const MAX_MESSAGES_PER_ROOM = 2000;
+const DEFAULT_MESSAGE_PLACEHOLDER = "Message the room (Enter to send, Ctrl+Enter for newline)";
+const TYPING_EVENT_THROTTLE_MS = 1200;
+const TYPING_EVENT_TTL_MS = 3200;
 const HEAD_SCRAPER_ENDPOINT = "https://head-scraper.aaravm.workers.dev/";
 const LINK_PREVIEW_DESCRIPTION_MAX = 220;
 const linkPreviewCache = new Map();
@@ -515,14 +525,16 @@ const canDeleteMessage = message => {
 
 const renderMessageTile = message => {
   const isSelf = message.userId === state.user?.id;
+  const isOptimistic = Boolean(message.optimistic);
   const embeds = renderMessageEmbeds(message.text);
   const messageId = escapeHtml(String(message.id || ""));
   return `
-    <article class="message ${isSelf ? "self" : ""}" data-message-id="${messageId}">
+    <article class="message ${isSelf ? "self" : ""} ${isOptimistic ? "sending" : ""}" data-message-id="${messageId}">
       <header>
         <span class="author">${escapeHtml(message.username)}</span>
         <span class="message-meta">
           <time>${formatTime(message.createdAt)}</time>
+          ${isOptimistic ? '<span class="message-send-state">Sending...</span>' : ""}
         </span>
       </header>
       <p>${linkifyMessageText(message.text)}</p>
@@ -552,6 +564,8 @@ const insertNewlineAtCursor = input => {
   input.selectionStart = cursor;
   input.selectionEnd = cursor;
   syncMessageInputHeight();
+  syncLocalTypingFromInput();
+  updateComposerPlaceholder();
 };
 
 const renderComposerAttachments = () => {
@@ -667,7 +681,7 @@ const addMessageToState = message => {
   }
 
   existing.push(message);
-  state.messagesByRoom.set(roomId, existing.slice(-500));
+  state.messagesByRoom.set(roomId, existing.slice(-MAX_MESSAGES_PER_ROOM));
   return true;
 };
 
@@ -690,6 +704,80 @@ const removeMessageFromState = ({ roomId, messageId }) => {
 
   state.messagesByRoom.set(normalizedRoomId, nextMessages);
   return true;
+};
+
+const replaceMessageInState = ({ roomId, targetMessageId, nextMessage }) => {
+  const normalizedRoomId = String(roomId || "");
+  const normalizedTargetId = String(targetMessageId || "");
+  if (!normalizedRoomId || !normalizedTargetId || !nextMessage?.id) {
+    return false;
+  }
+
+  const existing = state.messagesByRoom.get(normalizedRoomId) || [];
+  const index = existing.findIndex(entry => String(entry.id) === normalizedTargetId);
+  if (index < 0) {
+    return false;
+  }
+
+  const normalizedNextId = String(nextMessage.id);
+  const duplicateIndex = existing.findIndex((entry, entryIndex) => {
+    return entryIndex !== index && String(entry.id) === normalizedNextId;
+  });
+
+  const nextEntries = [...existing];
+  if (duplicateIndex >= 0) {
+    nextEntries.splice(index, 1);
+  } else {
+    nextEntries[index] = nextMessage;
+  }
+
+  state.messagesByRoom.set(normalizedRoomId, nextEntries.slice(-MAX_MESSAGES_PER_ROOM));
+  return true;
+};
+
+const prependOlderMessagesToState = ({ roomId, messages }) => {
+  const normalizedRoomId = String(roomId || "");
+  const olderMessages = Array.isArray(messages) ? messages : [];
+  if (!normalizedRoomId || olderMessages.length === 0) {
+    return false;
+  }
+
+  const existing = state.messagesByRoom.get(normalizedRoomId) || [];
+  const existingIds = new Set(existing.map(entry => String(entry.id)));
+  const filteredOlder = olderMessages.filter(entry => {
+    const id = String(entry?.id || "");
+    return id && !existingIds.has(id);
+  });
+
+  if (filteredOlder.length === 0) {
+    return false;
+  }
+
+  const merged = [...filteredOlder, ...existing];
+  state.messagesByRoom.set(normalizedRoomId, merged.slice(-MAX_MESSAGES_PER_ROOM));
+  return true;
+};
+
+const reconcileOwnOptimisticMessage = confirmedMessage => {
+  const roomId = String(confirmedMessage?.roomId || "").trim();
+  if (!roomId || !confirmedMessage?.id || String(confirmedMessage.userId || "") !== String(state.user?.id || "")) {
+    return false;
+  }
+
+  const roomMessages = state.messagesByRoom.get(roomId) || [];
+  const optimisticMessage = roomMessages.find(
+    entry => entry?.optimistic && String(entry.userId || "") === String(state.user?.id || "") && entry.text === confirmedMessage.text
+  );
+
+  if (!optimisticMessage) {
+    return false;
+  }
+
+  return replaceMessageInState({
+    roomId,
+    targetMessageId: optimisticMessage.id,
+    nextMessage: confirmedMessage
+  });
 };
 
 const isMobileLayout = () => window.matchMedia("(max-width: 860px)").matches;
@@ -980,6 +1068,120 @@ const normalizePresenceStatus = member => {
   return member?.online ? "active" : "offline";
 };
 
+const purgeExpiredTypingEntriesForRoom = roomId => {
+  const normalizedRoomId = String(roomId || "");
+  if (!normalizedRoomId) {
+    return [];
+  }
+
+  const roomTyping = state.typingByRoom.get(normalizedRoomId);
+  if (!roomTyping) {
+    return [];
+  }
+
+  const now = Date.now();
+  for (const [userId, entry] of roomTyping.entries()) {
+    if (!entry || Number(entry.expiresAt || 0) <= now) {
+      roomTyping.delete(userId);
+    }
+  }
+
+  if (roomTyping.size === 0) {
+    state.typingByRoom.delete(normalizedRoomId);
+    return [];
+  }
+
+  return [...roomTyping.values()];
+};
+
+const formatTypingPlaceholder = users => {
+  const entries = Array.isArray(users) ? users : [];
+  if (entries.length === 0) {
+    return DEFAULT_MESSAGE_PLACEHOLDER;
+  }
+
+  const names = entries
+    .map(entry => String(entry?.displayName || "Someone").trim() || "Someone")
+    .filter(Boolean);
+
+  if (names.length === 1) {
+    return `${names[0]} is typing...`;
+  }
+
+  if (names.length === 2) {
+    return `${names[0]} and ${names[1]} are typing...`;
+  }
+
+  return `${names[0]} and ${names.length - 1} others are typing...`;
+};
+
+const updateComposerPlaceholder = () => {
+  const room = getActiveRoom();
+  if (!room || !roomCanChat(room) || !state.activeRoomCanAccess) {
+    messageInput.placeholder = DEFAULT_MESSAGE_PLACEHOLDER;
+    return;
+  }
+
+  const typingEntries = purgeExpiredTypingEntriesForRoom(room.id).filter(
+    entry => String(entry.userId || "") !== String(state.user?.id || "")
+  );
+  messageInput.placeholder = formatTypingPlaceholder(typingEntries);
+};
+
+const emitTypingState = ({ roomId, isTyping }) => {
+  if (!socket.connected) {
+    return;
+  }
+
+  const normalizedRoomId = String(roomId || "").trim();
+  if (!normalizedRoomId) {
+    return;
+  }
+
+  socket.emit("typing:update", {
+    roomId: normalizedRoomId,
+    isTyping: Boolean(isTyping)
+  });
+};
+
+const stopLocalTyping = ({ emit = true } = {}) => {
+  if (emit && localTypingRoomId) {
+    emitTypingState({
+      roomId: localTypingRoomId,
+      isTyping: false
+    });
+  }
+
+  localTypingRoomId = null;
+  localTypingLastSentAt = 0;
+};
+
+const syncLocalTypingFromInput = () => {
+  const room = getActiveRoom();
+  const canEmitTyping = Boolean(room && roomCanChat(room) && state.activeRoomCanAccess);
+  const hasText = Boolean(String(messageInput.value || "").trim());
+
+  if (!canEmitTyping || !hasText) {
+    stopLocalTyping({ emit: true });
+    return;
+  }
+
+  const roomId = String(room.id);
+  const now = Date.now();
+  const roomChanged = localTypingRoomId !== roomId;
+  const shouldEmit = roomChanged || now - localTypingLastSentAt >= TYPING_EVENT_THROTTLE_MS;
+  if (!shouldEmit) {
+    return;
+  }
+
+  emitTypingState({
+    roomId,
+    isTyping: true
+  });
+  localTypingRoomId = roomId;
+  localTypingLastSentAt = now;
+};
+
 const setConnectionStatus = status => {
   if (!connectionChip) {
     return;
@@ -996,10 +1198,12 @@ const setComposerState = enabled => {
   sendMessageButton.disabled = !enabled;
   attachFilesButton.disabled = !enabled;
   if (!enabled) {
+    stopLocalTyping({ emit: true });
     messageInput.value = "";
     clearComposerAttachments();
   }
   syncMessageInputHeight();
+  updateComposerPlaceholder();
 };
 
 const closeChatActionsMenu = () => {
@@ -1057,6 +1261,7 @@ const renderSettingsRooms = () => {
 
 const openSettingsModal = () => {
   closeMobileDrawer();
+  stopLocalTyping({ emit: true });
   hideMemberContextMenu();
   hideMessageContextMenu();
   closeChatActionsMenu();
@@ -1081,6 +1286,7 @@ const closeSettingsModal = () => {
 
 const openRoomModal = ({ locked = false } = {}) => {
   closeMobileDrawer();
+  stopLocalTyping({ emit: true });
   hideMemberContextMenu();
   hideMessageContextMenu();
   closeChatActionsMenu();
@@ -1156,7 +1362,7 @@ const scheduleRoomPolling = () => {
     try {
       await loadRooms({ showErrors: false });
       if (state.activeRoomId) {
-        await loadActiveRoomSnapshot({ showErrors: false, joinSocket: false });
+        await loadActiveRoomSnapshot({ showErrors: false, joinSocket: false, includeMessages: false });
       }
     } finally {
       roomPollBusy = false;
@@ -1551,7 +1757,7 @@ const joinActiveRoom = async () => {
   }
 };
 
-const loadActiveRoomSnapshot = async ({ showErrors = true, joinSocket = true } = {}) => {
+const loadActiveRoomSnapshot = async ({ showErrors = true, joinSocket = true, includeMessages = false } = {}) => {
   const room = getActiveRoom();
   if (!room) {
     emitPresenceState();
@@ -1559,17 +1765,27 @@ const loadActiveRoomSnapshot = async ({ showErrors = true, joinSocket = true } =
   }
 
   try {
-    const data = await request(`/api/rooms/${room.id}`);
+    const query = new URLSearchParams();
+    if (includeMessages) {
+      query.set("includeMessages", "1");
+      query.set("messageLimit", String(MESSAGE_FETCH_LIMIT));
+    }
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const data = await request(`/api/rooms/${room.id}${suffix}`);
     state.activeRoomCanAccess = Boolean(data.canAccess);
     state.activeRoomAccessStatus = data.accessStatus || "none";
 
-    state.messagesByRoom.set(room.id, Array.isArray(data.messages) ? data.messages : []);
+    if (includeMessages) {
+      state.messagesByRoom.set(room.id, Array.isArray(data.messages) ? data.messages : []);
+      state.messageHasMoreByRoom.set(room.id, Boolean(data.messageHasMore));
+    }
     state.membersByRoom.set(room.id, Array.isArray(data.members) ? data.members : []);
     state.pendingByRoom.set(room.id, Array.isArray(data.pendingUsers) ? data.pendingUsers : []);
 
     renderRoomHeader();
     renderMessages();
     renderMembers();
+    updateComposerPlaceholder();
 
     if (joinSocket && data.canAccess) {
       await joinActiveRoom();
@@ -1589,13 +1805,14 @@ const selectActiveRoom = async roomId => {
   }
 
   closeMobileDrawer();
+  stopLocalTyping({ emit: true });
   hideMemberContextMenu();
   hideMessageContextMenu();
   closeChatActionsMenu();
   forceNextMessageStickToBottom = true;
   state.activeRoomId = roomId;
   renderRooms();
-  await loadActiveRoomSnapshot({ showErrors: true, joinSocket: true });
+  await loadActiveRoomSnapshot({ showErrors: true, joinSocket: true, includeMessages: true });
   scheduleRoomPolling();
 };
 
@@ -1644,7 +1861,7 @@ const deleteMessageById = async ({ roomId, messageId }) => {
 
 const refreshRoomsAndActive = async () => {
   await loadRooms({ showErrors: false });
-  await loadActiveRoomSnapshot({ showErrors: false, joinSocket: false });
+  await loadActiveRoomSnapshot({ showErrors: false, joinSocket: false, includeMessages: false });
   if (!roomModal.classList.contains("hidden")) {
     await loadDiscoverableRooms({ showErrors: false });
   }
@@ -1659,6 +1876,58 @@ const clearRoomCaches = roomId => {
   state.membersByRoom.delete(normalizedRoomId);
   state.pendingByRoom.delete(normalizedRoomId);
   state.messagesByRoom.delete(normalizedRoomId);
+  state.messageHasMoreByRoom.delete(normalizedRoomId);
+  state.messageLoadingOlderByRoom.delete(normalizedRoomId);
+  state.typingByRoom.delete(normalizedRoomId);
+};
+
+const loadOlderMessagesForActiveRoom = async () => {
+  const room = getActiveRoom();
+  if (!room || !roomCanChat(room) || !state.activeRoomCanAccess) {
+    return;
+  }
+
+  const roomId = String(room.id);
+  if (!state.messageHasMoreByRoom.get(roomId) || state.messageLoadingOlderByRoom.has(roomId)) {
+    return;
+  }
+
+  const existingMessages = state.messagesByRoom.get(roomId) || [];
+  const oldestMessage = existingMessages[0];
+  if (!oldestMessage?.id) {
+    return;
+  }
+
+  state.messageLoadingOlderByRoom.add(roomId);
+  const previousScrollHeight = messageList.scrollHeight;
+  const previousScrollTop = messageList.scrollTop;
+
+  try {
+    const query = new URLSearchParams();
+    query.set("limit", String(MESSAGE_FETCH_LIMIT));
+    query.set("beforeId", String(oldestMessage.id));
+
+    const data = await request(`/api/rooms/${roomId}/messages?${query.toString()}`);
+    const olderMessages = Array.isArray(data.messages) ? data.messages : [];
+    state.messageHasMoreByRoom.set(roomId, Boolean(data.hasMore));
+
+    const added = prependOlderMessagesToState({
+      roomId,
+      messages: olderMessages
+    });
+
+    if (!added || roomId !== String(state.activeRoomId || "")) {
+      return;
+    }
+
+    renderMessages();
+    const delta = messageList.scrollHeight - previousScrollHeight;
+    messageList.scrollTop = Math.max(0, previousScrollTop + delta);
+  } catch (error) {
+    notify(error.message || "Unable to load older messages");
+  } finally {
+    state.messageLoadingOlderByRoom.delete(roomId);
+  }
 };
 
 const leaveRoomById = async roomId => {
@@ -1674,7 +1943,7 @@ const leaveRoomById = async roomId => {
   }
 
   await loadRooms({ showErrors: false });
-  await loadActiveRoomSnapshot({ showErrors: false, joinSocket: true });
+  await loadActiveRoomSnapshot({ showErrors: false, joinSocket: true, includeMessages: false });
   scheduleRoomPolling();
 };
 
@@ -1691,7 +1960,7 @@ const deleteRoomById = async roomId => {
   }
 
   await loadRooms({ showErrors: false });
-  await loadActiveRoomSnapshot({ showErrors: false, joinSocket: true });
+  await loadActiveRoomSnapshot({ showErrors: false, joinSocket: true, includeMessages: false });
   scheduleRoomPolling();
 };
 
@@ -1708,6 +1977,7 @@ const processMessageSendQueue = async () => {
       continue;
     }
 
+    let optimisticMessage = null;
     try {
       const uploadedFiles = await uploadComposerFiles(nextMessage.files || []);
       const attachmentUrls = uploadedFiles.map(item => String(item?.url || "").trim()).filter(Boolean);
@@ -1720,20 +1990,57 @@ const processMessageSendQueue = async () => {
         continue;
       }
 
+      optimisticMessage = {
+        id: `tmp-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
+        roomId: nextMessage.roomId,
+        userId: state.user?.id || "",
+        username: state.user?.displayName || "You",
+        avatarUrl: state.user?.avatarUrl || null,
+        text: mergedText,
+        createdAt: new Date().toISOString(),
+        optimistic: true
+      };
+
+      const optimisticAdded = addMessageToState(optimisticMessage);
+      if (optimisticAdded && String(nextMessage.roomId) === String(state.activeRoomId)) {
+        renderMessages();
+        messageList.scrollTop = messageList.scrollHeight;
+      }
+
       const result = await sendMessage({
         roomId: nextMessage.roomId,
         text: mergedText
       });
 
-      if (result?.message && addMessageToState(result.message) && String(result.message.roomId) === String(state.activeRoomId)) {
-        renderMessages();
-        messageList.scrollTop = messageList.scrollHeight;
+      if (result?.message) {
+        const replaced = optimisticMessage
+          ? replaceMessageInState({
+              roomId: nextMessage.roomId,
+              targetMessageId: optimisticMessage.id,
+              nextMessage: result.message
+            })
+          : false;
+        const added = replaced ? false : addMessageToState(result.message);
+
+        if ((replaced || added) && String(result.message.roomId) === String(state.activeRoomId)) {
+          renderMessages();
+          messageList.scrollTop = messageList.scrollHeight;
+        }
       }
 
       if (result?.transport === "http") {
         await loadRooms({ showErrors: false });
       }
     } catch (error) {
+      if (optimisticMessage) {
+        const removed = removeMessageFromState({
+          roomId: optimisticMessage.roomId,
+          messageId: optimisticMessage.id
+        });
+        if (removed && String(optimisticMessage.roomId) === String(state.activeRoomId)) {
+          renderMessages();
+        }
+      }
       notify(error.message || "Unable to send message");
     }
   }
@@ -1758,6 +2065,8 @@ const queueComposerMessage = () => {
   syncMessageInputHeight();
   clearComposerAttachments();
   messageInput.focus();
+  stopLocalTyping({ emit: true });
+  updateComposerPlaceholder();
 
   messageSendQueue.push({
     roomId: room.id,
@@ -1778,7 +2087,7 @@ const bootAuthenticated = async () => {
   appView.classList.remove("hidden");
 
   renderRooms();
-  await loadActiveRoomSnapshot({ showErrors: false, joinSocket: false });
+  await loadActiveRoomSnapshot({ showErrors: false, joinSocket: false, includeMessages: true });
   scheduleRoomPolling();
 
   if (!socket.connected) {
@@ -1793,6 +2102,7 @@ oauthButton.addEventListener("click", () => {
 
 logoutButton.addEventListener("click", async () => {
   try {
+    stopLocalTyping({ emit: true });
     await request("/auth/logout", { method: "POST" });
     socket.disconnect();
     window.location.href = "/";
@@ -1945,6 +2255,16 @@ messageContextDeleteButton.addEventListener("click", async () => {
 
 messageInput.addEventListener("input", () => {
   syncMessageInputHeight();
+  syncLocalTypingFromInput();
+  updateComposerPlaceholder();
+});
+
+messageList.addEventListener("scroll", () => {
+  if (messageList.scrollTop > 52) {
+    return;
+  }
+
+  void loadOlderMessagesForActiveRoom();
 });
 
 messageInput.addEventListener("keydown", event => {
@@ -2069,6 +2389,7 @@ deleteAccountButton.addEventListener("click", async () => {
 
   deleteAccountButton.disabled = true;
   try {
+    stopLocalTyping({ emit: true });
     await request("/api/me", { method: "DELETE" });
     socket.disconnect();
     window.location.href = "/";
@@ -2127,16 +2448,23 @@ window.addEventListener("resize", () => {
 window.addEventListener("focus", () => {
   emitPresenceState();
   scheduleRoomPolling();
+  updateComposerPlaceholder();
 });
 
 window.addEventListener("blur", () => {
+  stopLocalTyping({ emit: true });
   emitPresenceState();
   scheduleRoomPolling();
+  updateComposerPlaceholder();
 });
 
 document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") {
+    stopLocalTyping({ emit: true });
+  }
   emitPresenceState();
   scheduleRoomPolling();
+  updateComposerPlaceholder();
 });
 
 window.addEventListener(
@@ -2521,8 +2849,10 @@ socket.on("connect", async () => {
 });
 
 socket.on("disconnect", () => {
+  stopLocalTyping({ emit: false });
   setConnectionStatus("offline");
   scheduleRoomPolling();
+  updateComposerPlaceholder();
 });
 
 socket.on("connect_error", () => {
@@ -2549,9 +2879,11 @@ socket.on("rooms:update", rooms => {
     previousActiveRoom?.memberCount !== nextActiveRoom?.memberCount;
 
   if (previousActive !== state.activeRoomId || !state.messagesByRoom.has(state.activeRoomId) || accessChanged) {
+    const shouldIncludeMessages = previousActive !== state.activeRoomId || !state.messagesByRoom.has(state.activeRoomId);
     loadActiveRoomSnapshot({
       showErrors: false,
-      joinSocket: Boolean(nextActiveRoom && nextActiveRoom.accessStatus === "member")
+      joinSocket: Boolean(nextActiveRoom && nextActiveRoom.accessStatus === "member"),
+      includeMessages: shouldIncludeMessages
     });
   }
 });
@@ -2562,14 +2894,26 @@ socket.on("room:history", payload => {
   }
 
   state.messagesByRoom.set(payload.roomId, Array.isArray(payload.messages) ? payload.messages : []);
+  if (typeof payload.hasMore === "boolean") {
+    state.messageHasMoreByRoom.set(payload.roomId, payload.hasMore);
+  }
 
   if (payload.roomId === state.activeRoomId) {
     renderMessages({ forceScroll: true });
+    updateComposerPlaceholder();
   }
 });
 
 socket.on("message:new", message => {
   if (!message?.roomId) {
+    return;
+  }
+
+  if (reconcileOwnOptimisticMessage(message)) {
+    if (String(message.roomId) === String(state.activeRoomId)) {
+      renderMessages();
+      messageList.scrollTop = messageList.scrollHeight;
+    }
     return;
   }
 
@@ -2583,6 +2927,39 @@ socket.on("message:new", message => {
     if (message.userId === state.user?.id) {
       messageList.scrollTop = messageList.scrollHeight;
     }
+    updateComposerPlaceholder();
+  }
+});
+
+socket.on("typing:update", payload => {
+  const roomId = String(payload?.roomId || "").trim();
+  const userId = String(payload?.userId || "").trim();
+  if (!roomId || !userId || userId === String(state.user?.id || "")) {
+    return;
+  }
+
+  const isTyping = Boolean(payload?.isTyping);
+  const displayName = String(payload?.displayName || "User").trim() || "User";
+  const existingRoomTyping = state.typingByRoom.get(roomId) || new Map();
+
+  if (isTyping) {
+    existingRoomTyping.set(userId, {
+      userId,
+      displayName,
+      expiresAt: Date.now() + TYPING_EVENT_TTL_MS
+    });
+    state.typingByRoom.set(roomId, existingRoomTyping);
+  } else {
+    existingRoomTyping.delete(userId);
+    if (existingRoomTyping.size === 0) {
+      state.typingByRoom.delete(roomId);
+    } else {
+      state.typingByRoom.set(roomId, existingRoomTyping);
+    }
+  }
+
+  if (roomId === String(state.activeRoomId || "")) {
+    updateComposerPlaceholder();
   }
 });
 
@@ -2614,12 +2991,17 @@ socket.on("room:presence", payload => {
   if (payload.roomId === state.activeRoomId) {
     renderMembers();
     renderRoomHeader();
+    updateComposerPlaceholder();
   }
 });
 
 syncMobileDrawerUi();
 setConnectionStatus("syncing");
 syncMessageInputHeight();
+updateComposerPlaceholder();
+window.setInterval(() => {
+  updateComposerPlaceholder();
+}, 1000);
 for (const element of document.querySelectorAll("form, input, textarea")) {
   element.setAttribute("autocomplete", "off");
 }

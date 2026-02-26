@@ -47,7 +47,7 @@ const realtime = setupRealtime({
   getRoomMembers: store.getRoomMembers,
   getRoomPendingUsers: store.getRoomPendingUsers,
   getRoomAccessForUser: store.getRoomAccessForUser,
-  getMessagesForRoom: store.getMessagesForRoom,
+  getMessagesPageForRoom: store.getMessagesPageForRoom,
   addMessage: store.addMessage
 });
 

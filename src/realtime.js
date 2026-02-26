@@ -10,9 +10,10 @@ const setupRealtime = ({
   getRoomMembers,
   getRoomPendingUsers,
   getRoomAccessForUser,
-  getMessagesForRoom,
+  getMessagesPageForRoom,
   addMessage
 }) => {
+  const ROOM_HISTORY_LIMIT = 80;
   const onlineCounts = new Map();
   const socketsByUser = new Map();
   const getSocketById = socketId => {
@@ -130,7 +131,31 @@ const setupRealtime = ({
     }
   };
 
-  const getRoomSnapshotForUser = (roomId, userId) => {
+  const emitTypingUpdate = ({ roomId, userId, displayName, isTyping }) => {
+    const normalizedRoomId = String(roomId || "").trim();
+    const normalizedUserId = String(userId || "").trim();
+    if (!normalizedRoomId || !normalizedUserId) {
+      return;
+    }
+
+    io.to(`room:${normalizedRoomId}`).emit("typing:update", {
+      roomId: normalizedRoomId,
+      userId: normalizedUserId,
+      displayName: String(displayName || "").trim() || "User",
+      isTyping: Boolean(isTyping)
+    });
+  };
+
+  const normalizeMessageLimit = value => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return ROOM_HISTORY_LIMIT;
+    }
+
+    return Math.max(1, Math.min(200, Math.floor(parsed)));
+  };
+
+  const getRoomSnapshotForUser = (roomId, userId, options = {}) => {
     const room = getRoomById(roomId);
     if (!room) {
       return { error: "Room not found", status: 404 };
@@ -144,6 +169,10 @@ const setupRealtime = ({
 
     const isOwner = room.ownerUserId === normalizedUserId;
     const canAccess = accessStatus === "member";
+    const includeMessages = Boolean(options.includeMessages);
+    const messageLimit = normalizeMessageLimit(options.messageLimit);
+    const messagePage =
+      canAccess && includeMessages ? getMessagesPageForRoom({ roomId: room.id, limit: messageLimit }) : { messages: [], hasMore: false };
 
     return {
       room,
@@ -158,7 +187,8 @@ const setupRealtime = ({
           }))
         : [],
       pendingUsers: isOwner ? getRoomPendingUsers(room.id) : [],
-      messages: canAccess ? getMessagesForRoom(room.id, 200) : []
+      messages: messagePage.messages,
+      messageHasMore: messagePage.hasMore
     };
   };
 
@@ -221,15 +251,23 @@ const setupRealtime = ({
       }
 
       if (socket.activeRoomId && socket.activeRoomId !== room.id) {
+        emitTypingUpdate({
+          roomId: socket.activeRoomId,
+          userId,
+          displayName: user.displayName,
+          isTyping: false
+        });
         socket.leave(`room:${socket.activeRoomId}`);
       }
 
       socket.activeRoomId = room.id;
       socket.join(`room:${room.id}`);
 
+      const historyPage = getMessagesPageForRoom({ roomId: room.id, limit: ROOM_HISTORY_LIMIT });
       socket.emit("room:history", {
         roomId: room.id,
-        messages: getMessagesForRoom(room.id, 200)
+        messages: historyPage.messages,
+        hasMore: historyPage.hasMore
       });
 
       emitPresenceForUserRooms(userId);
@@ -249,9 +287,36 @@ const setupRealtime = ({
       socket.activeRoomId = nextRoomId;
       socket.isChatFocused = Boolean(nextFocused && nextRoomId);
 
+      if (previousRoomId && (previousRoomId !== String(socket.activeRoomId || "") || !socket.isChatFocused)) {
+        emitTypingUpdate({
+          roomId: previousRoomId,
+          userId,
+          displayName: user.displayName,
+          isTyping: false
+        });
+      }
+
       if (previousFocused !== socket.isChatFocused || previousRoomId !== String(socket.activeRoomId || "")) {
         emitPresenceForUserRooms(userId);
       }
+    });
+
+    socket.on("typing:update", payload => {
+      const roomId = String(payload?.roomId || socket.activeRoomId || "").trim();
+      if (!roomId) {
+        return;
+      }
+
+      if (getRoomAccessForUser(roomId, userId) !== "member") {
+        return;
+      }
+
+      emitTypingUpdate({
+        roomId,
+        userId,
+        displayName: user.displayName,
+        isTyping: Boolean(payload?.isTyping)
+      });
     });
 
     socket.on("message:send", async (payload, callback = () => {}) => {
@@ -269,14 +334,25 @@ const setupRealtime = ({
       try {
         const message = await addMessage({ roomId, userId, text });
         io.to(`room:${roomId}`).emit("message:new", message);
-        sendRoomsUpdateForRoomUsers(roomId);
         callback({ ok: true, message });
+        setImmediate(() => {
+          sendRoomsUpdateForRoomUsers(roomId);
+        });
       } catch (error) {
         callback({ error: error.message || "Unable to send message" });
       }
     });
 
     socket.on("disconnect", () => {
+      if (socket.activeRoomId) {
+        emitTypingUpdate({
+          roomId: socket.activeRoomId,
+          userId,
+          displayName: user.displayName,
+          isTyping: false
+        });
+      }
+
       const socketIds = socketsByUser.get(userId);
       if (socketIds) {
         socketIds.delete(socket.id);

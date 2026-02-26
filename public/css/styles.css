@@ -553,6 +553,11 @@ textarea:focus-visible {
   background: rgba(29, 53, 47, 0.84);
 }
 
+.message.sending {
+  opacity: 0.82;
+  border-style: dashed;
+}
+
 .message header {
   display: flex;
   justify-content: space-between;
@@ -575,6 +580,13 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.message-send-state {
+  color: #c9d2e6;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .message p {

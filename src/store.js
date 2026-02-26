@@ -271,6 +271,14 @@ const persistMessageAndRoom = async ({ message, room }) => {
   });
 };
 
+const deletePersistedMessageAndRoom = async ({ messageId, room }) => {
+  await queueWrite(async () => {
+    const collections = await ensureMongoConnections();
+    await collections.messages.deleteOne({ _id: String(messageId) });
+    await collections.rooms.replaceOne({ _id: String(room.id) }, toMongoDocument(room), { upsert: true });
+  });
+};
+
 const loadLegacyStoreFile = async () => {
   try {
     const raw = await fs.readFile(DATA_FILE, "utf8");
@@ -917,7 +925,7 @@ const deleteMessage = async ({ roomId, messageId, requesterUserId }) => {
 
   state.messages = state.messages.filter(entry => entry.id !== normalizedMessageId);
   touchRoom(room);
-  await syncStateToMongo();
+  await deletePersistedMessageAndRoom({ messageId: normalizedMessageId, room });
 
   return {
     roomId: String(room.id),
@@ -925,16 +933,40 @@ const deleteMessage = async ({ roomId, messageId, requesterUserId }) => {
   };
 };
 
-const getMessagesForRoom = (roomId, limit = 200) => {
+const normalizeMessagePageLimit = limit => Math.max(1, Math.min(200, Number(limit) || 80));
+
+const getMessagesPageForRoom = ({ roomId, limit = 80, beforeMessageId = "" } = {}) => {
   const room = findRoomById(roomId);
   if (!room) {
-    return [];
+    return {
+      messages: [],
+      hasMore: false
+    };
   }
 
-  return state.messages
-    .filter(message => message.roomId === String(roomId))
-    .slice(-Math.max(1, Number(limit) || 200))
-    .map(formatMessageForClient);
+  const normalizedRoomId = String(roomId);
+  const normalizedBeforeMessageId = String(beforeMessageId || "").trim();
+  const roomMessages = state.messages.filter(message => message.roomId === normalizedRoomId);
+  const normalizedLimit = normalizeMessagePageLimit(limit);
+
+  let endExclusive = roomMessages.length;
+  if (normalizedBeforeMessageId) {
+    const beforeIndex = roomMessages.findIndex(message => String(message.id) === normalizedBeforeMessageId);
+    if (beforeIndex >= 0) {
+      endExclusive = beforeIndex;
+    }
+  }
+
+  const startInclusive = Math.max(0, endExclusive - normalizedLimit);
+  return {
+    messages: roomMessages.slice(startInclusive, endExclusive).map(formatMessageForClient),
+    hasMore: startInclusive > 0
+  };
+};
+
+const getMessagesForRoom = (roomId, limit = 200) => {
+  const page = getMessagesPageForRoom({ roomId, limit, beforeMessageId: "" });
+  return page.messages;
 };
 
 const getRoomMembers = roomId => {
@@ -989,20 +1021,34 @@ const getRoomUserIds = roomId => {
   return [...values];
 };
 
+const getLatestMessageByRoomId = () => {
+  const latestByRoomId = new Map();
+
+  for (const message of state.messages) {
+    const roomId = String(message.roomId || "");
+    if (!roomId) {
+      continue;
+    }
+
+    const existing = latestByRoomId.get(roomId);
+    if (!existing || toTimestamp(message.createdAt) >= toTimestamp(existing.createdAt)) {
+      latestByRoomId.set(roomId, message);
+    }
+  }
+
+  return latestByRoomId;
+};
+
 const listRoomsForUser = userId => {
   const normalizedUserId = String(userId);
+  const latestMessageByRoomId = getLatestMessageByRoomId();
 
   return state.rooms
     .filter(room => room.memberUserIds.includes(normalizedUserId) || room.pendingUserIds.includes(normalizedUserId))
     .map(room => {
       const owner = findUserById(room.ownerUserId);
       const accessStatus = room.memberUserIds.includes(normalizedUserId) ? "member" : "pending";
-      const latestMessage =
-        accessStatus === "member"
-          ? [...state.messages]
-              .reverse()
-              .find(message => message.roomId === room.id)
-          : null;
+      const latestMessage = accessStatus === "member" ? latestMessageByRoomId.get(String(room.id)) || null : null;
       const latestMessageAuthor = latestMessage ? findUserById(latestMessage.userId) : null;
 
       return {
@@ -1122,6 +1168,7 @@ module.exports = {
   deleteSession,
   deleteUserAccount,
   ensureStore,
+  getMessagesPageForRoom,
   getMessagesForRoom,
   getRoomAccessForUser,
   getRoomById,

@@ -32,6 +32,15 @@ const registerRoutes = ({
   realtime,
   store
 }) => {
+  const parseMessageLimit = (rawValue, fallback = 80) => {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) {
+      return fallback;
+    }
+
+    return Math.max(1, Math.min(200, Math.floor(parsed)));
+  };
+
   app.get("/auth/login", async (req, res) => {
     try {
       const signupUrl = await fetchSignupUrl(req);
@@ -388,7 +397,12 @@ const registerRoutes = ({
   });
 
   app.get("/api/rooms/:roomId", requireAuth, (req, res) => {
-    const snapshot = realtime.getRoomSnapshotForUser(req.params.roomId, req.user.id);
+    const includeMessages = String(req.query?.includeMessages || "").trim() === "1";
+    const messageLimit = parseMessageLimit(req.query?.messageLimit, 80);
+    const snapshot = realtime.getRoomSnapshotForUser(req.params.roomId, req.user.id, {
+      includeMessages,
+      messageLimit
+    });
     if (snapshot.error) {
       return res.status(snapshot.status).json({ error: snapshot.error });
     }
@@ -424,7 +438,19 @@ const registerRoutes = ({
       return res.status(403).json({ error: "Waiting for owner approval" });
     }
 
-    res.json({ roomId: snapshot.room.id, messages: snapshot.messages });
+    const limit = parseMessageLimit(req.query?.limit, 80);
+    const beforeId = String(req.query?.beforeId || "").trim();
+    const page = store.getMessagesPageForRoom({
+      roomId: snapshot.room.id,
+      limit,
+      beforeMessageId: beforeId
+    });
+
+    res.json({
+      roomId: snapshot.room.id,
+      messages: page.messages,
+      hasMore: page.hasMore
+    });
   });
 
   app.post("/api/rooms/:roomId/messages", requireAuth, async (req, res) => {
@@ -445,9 +471,10 @@ const registerRoutes = ({
       });
 
       io.to(`room:${snapshot.room.id}`).emit("message:new", message);
-      realtime.sendRoomsUpdateForRoomUsers(snapshot.room.id);
-
       res.status(201).json({ message });
+      setImmediate(() => {
+        realtime.sendRoomsUpdateForRoomUsers(snapshot.room.id);
+      });
     } catch (error) {
       res.status(400).json({ error: error.message || "Unable to send message" });
     }
@@ -471,12 +498,13 @@ const registerRoutes = ({
       });
 
       io.to(`room:${snapshot.room.id}`).emit("message:delete", result);
-      realtime.sendRoomsUpdateForRoomUsers(snapshot.room.id);
-
       res.json({
         ok: true,
         roomId: result.roomId,
         messageId: result.messageId
+      });
+      setImmediate(() => {
+        realtime.sendRoomsUpdateForRoomUsers(snapshot.room.id);
       });
     } catch (error) {
       const message = error.message || "Unable to delete message";
