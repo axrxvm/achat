@@ -19,8 +19,13 @@
         <div class="auth-brand">AChat</div>
         <h1>Your Rooms, Live</h1>
         <p>Connect, collaborate, in real-time</p>
-        <button id="oauth-login" class="primary-button">Continue </button>
+        <button id="oauth-login" class="primary-button">Continue with OAuth</button>
       </div>
+      <footer class="auth-footer">
+        <span>Made by Aarav Mehta</span>
+        <span aria-hidden="true">|</span>
+        <a href="https://github.com/axrxvm/achat" target="_blank" rel="noopener noreferrer">Github</a>
+      </footer>
     </div>
 
     <div id="app-view" class="app-view hidden">
@@ -68,6 +73,7 @@
           </div>
 
           <div class="chat-header__actions">
+            <span id="connection-chip" class="connection-chip syncing" role="status" aria-live="polite">Connecting</span>
             <div class="mobile-action-group">
               <button id="mobile-rooms-toggle" type="button" class="secondary-button mobile-toggle">Rooms</button>
               <button id="mobile-members-toggle" type="button" class="secondary-button mobile-toggle">Members</button>
@@ -86,7 +92,7 @@
           <input
             id="message-input"
             name="message"
-            placeholder="Message"
+            placeholder="Message the room"
             maxlength="2000"
             autocomplete="off"
             autocapitalize="off"

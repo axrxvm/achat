@@ -15,7 +15,7 @@ const socket = io({
 });
 
 const SOCKET_ACK_TIMEOUT_MS = 3500;
-const ROOM_POLL_INTERVAL_MS = 3000;
+const ROOM_POLL_INTERVAL_MS = 8000;
 
 const authView = document.getElementById("auth-view");
 const appView = document.getElementById("app-view");
@@ -34,6 +34,7 @@ const roomList = document.getElementById("room-list");
 const activeRoomName = document.getElementById("active-room-name");
 const activeRoomMeta = document.getElementById("active-room-meta");
 const leaveRoomButton = document.getElementById("leave-room");
+const connectionChip = document.getElementById("connection-chip");
 
 const privacyToggleWrap = document.getElementById("privacy-toggle-wrap");
 const privacyToggle = document.getElementById("privacy-toggle");
@@ -66,6 +67,9 @@ let roomPollBusy = false;
 let roomModalLocked = false;
 let mobileDrawer = null;
 let memberContextTargetUserId = null;
+let forceNextMessageStickToBottom = false;
+let lastRenderedMessageKey = "";
+let lastRenderedMessageRoomId = null;
 
 const formatTime = isoDate => {
   const date = new Date(isoDate);
@@ -222,6 +226,17 @@ const normalizePresenceStatus = member => {
   return member?.online ? "active" : "offline";
 };
 
+const setConnectionStatus = status => {
+  if (!connectionChip) {
+    return;
+  }
+
+  const normalized = status === "online" || status === "syncing" || status === "offline" ? status : "offline";
+  const label = normalized === "online" ? "Live" : normalized === "syncing" ? "Connecting" : "Reconnecting";
+  connectionChip.className = `connection-chip ${normalized}`;
+  connectionChip.textContent = label;
+};
+
 const setComposerState = enabled => {
   messageInput.disabled = !enabled;
   sendMessageButton.disabled = !enabled;
@@ -275,29 +290,45 @@ const syncRoomModalForRoomCount = () => {
   }
 };
 
-const scheduleRoomPolling = () => {
-  if (roomPollTimer) {
-    window.clearInterval(roomPollTimer);
-    roomPollTimer = null;
+const clearRoomPolling = () => {
+  if (!roomPollTimer) {
+    return;
   }
 
-  if (!state.activeRoomId) {
+  window.clearInterval(roomPollTimer);
+  roomPollTimer = null;
+};
+
+const shouldPollRooms = () =>
+  Boolean(state.activeRoomId && !socket.connected && document.visibilityState === "visible");
+
+const scheduleRoomPolling = () => {
+  clearRoomPolling();
+
+  if (!shouldPollRooms()) {
     return;
   }
 
   roomPollTimer = window.setInterval(async () => {
-    if (roomPollBusy) {
+    if (roomPollBusy || !shouldPollRooms()) {
       return;
     }
 
     roomPollBusy = true;
     try {
-      await loadActiveRoomSnapshot({ showErrors: false, joinSocket: false });
       await loadRooms({ showErrors: false });
+      if (state.activeRoomId) {
+        await loadActiveRoomSnapshot({ showErrors: false, joinSocket: false });
+      }
     } finally {
       roomPollBusy = false;
     }
   }, ROOM_POLL_INTERVAL_MS);
+};
+
+const isMessageListNearBottom = () => {
+  const distanceToBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight;
+  return distanceToBottom <= 72;
 };
 
 const renderMembers = () => {
@@ -364,24 +395,51 @@ const renderMembers = () => {
   memberList.innerHTML = memberItems + waitlistSection;
 };
 
-const renderMessages = () => {
+const renderMessages = ({ forceScroll = false } = {}) => {
   const room = getActiveRoom();
   const roomId = state.activeRoomId;
   const messages = state.messagesByRoom.get(roomId) || [];
 
   if (!room) {
-    messageList.innerHTML = '<div class="empty-chat">Pick a room or create one to start chatting.</div>';
+    const nextKey = "no-room";
+    if (nextKey !== lastRenderedMessageKey) {
+      messageList.innerHTML = '<div class="empty-chat">Pick a room or create one to start chatting.</div>';
+      lastRenderedMessageKey = nextKey;
+      lastRenderedMessageRoomId = null;
+    }
+    forceNextMessageStickToBottom = false;
     return;
   }
 
   if (!roomCanChat(room) || !state.activeRoomCanAccess) {
-    messageList.innerHTML =
-      '<div class="room-locked">This is a private room. Your request is pending owner approval, so chat is locked.</div>';
+    const nextKey = `locked:${roomId}:${room.accessStatus || "none"}`;
+    if (nextKey !== lastRenderedMessageKey) {
+      messageList.innerHTML =
+        '<div class="room-locked">This is a private room. Your request is pending owner approval, so chat is locked.</div>';
+      lastRenderedMessageKey = nextKey;
+      lastRenderedMessageRoomId = roomId;
+    }
+    forceNextMessageStickToBottom = false;
     return;
   }
 
   if (messages.length === 0) {
-    messageList.innerHTML = '<div class="empty-chat">No messages yet. Say hi.</div>';
+    const nextKey = `empty:${roomId}`;
+    if (nextKey !== lastRenderedMessageKey) {
+      messageList.innerHTML = '<div class="empty-chat">No messages yet. Say hi.</div>';
+      lastRenderedMessageKey = nextKey;
+      lastRenderedMessageRoomId = roomId;
+    }
+    forceNextMessageStickToBottom = false;
+    return;
+  }
+
+  const lastMessage = messages[messages.length - 1];
+  const nextKey = `filled:${roomId}:${messages.length}:${lastMessage?.id || ""}:${lastMessage?.createdAt || ""}:${lastMessage?.userId || ""}`;
+  const roomChanged = lastRenderedMessageRoomId !== roomId;
+  const shouldStickToBottom = forceScroll || forceNextMessageStickToBottom || roomChanged || isMessageListNearBottom();
+
+  if (nextKey === lastRenderedMessageKey && !forceScroll && !forceNextMessageStickToBottom) {
     return;
   }
 
@@ -400,7 +458,13 @@ const renderMessages = () => {
     })
     .join("");
 
-  messageList.scrollTop = messageList.scrollHeight;
+  if (shouldStickToBottom) {
+    messageList.scrollTop = messageList.scrollHeight;
+  }
+
+  forceNextMessageStickToBottom = false;
+  lastRenderedMessageKey = nextKey;
+  lastRenderedMessageRoomId = roomId;
 };
 
 const renderRoomHeader = () => {
@@ -597,6 +661,7 @@ const selectActiveRoom = async roomId => {
 
   closeMobileDrawer();
   hideMemberContextMenu();
+  forceNextMessageStickToBottom = true;
   state.activeRoomId = roomId;
   renderRooms();
   await loadActiveRoomSnapshot({ showErrors: true, joinSocket: true });
@@ -614,14 +679,15 @@ const sendMessage = async ({ roomId, text }) => {
   if (socket.connected) {
     try {
       await emitWithAck("message:send", { roomId, text });
-      return;
+      return "socket";
     } catch (error) {
       await sendMessageViaHttp({ roomId, text });
-      return;
+      return "http";
     }
   }
 
   await sendMessageViaHttp({ roomId, text });
+  return "http";
 };
 
 const refreshRoomsAndActive = async () => {
@@ -642,6 +708,7 @@ const bootAuthenticated = async () => {
   scheduleRoomPolling();
 
   if (!socket.connected) {
+    setConnectionStatus("syncing");
     socket.connect();
   }
 };
@@ -709,9 +776,20 @@ window.addEventListener("resize", () => {
   }
 });
 
-window.addEventListener("focus", emitPresenceState);
-window.addEventListener("blur", emitPresenceState);
-document.addEventListener("visibilitychange", emitPresenceState);
+window.addEventListener("focus", () => {
+  emitPresenceState();
+  scheduleRoomPolling();
+});
+
+window.addEventListener("blur", () => {
+  emitPresenceState();
+  scheduleRoomPolling();
+});
+
+document.addEventListener("visibilitychange", () => {
+  emitPresenceState();
+  scheduleRoomPolling();
+});
 
 window.addEventListener("scroll", hideMemberContextMenu, true);
 
@@ -949,11 +1027,15 @@ messageForm.addEventListener("submit", async event => {
   sendMessageButton.disabled = true;
 
   try {
-    await sendMessage({ roomId: room.id, text });
+    forceNextMessageStickToBottom = true;
+    const transport = await sendMessage({ roomId: room.id, text });
     messageInput.value = "";
     messageInput.focus();
-    await loadRooms({ showErrors: false });
-    await loadActiveRoomSnapshot({ showErrors: false, joinSocket: false });
+
+    if (transport === "http") {
+      await loadRooms({ showErrors: false });
+      await loadActiveRoomSnapshot({ showErrors: false, joinSocket: false });
+    }
   } catch (error) {
     notify(error.message || "Unable to send message");
   } finally {
@@ -961,15 +1043,19 @@ messageForm.addEventListener("submit", async event => {
   }
 });
 
-socket.on("connect", () => {
-  joinActiveRoom();
+socket.on("connect", async () => {
+  setConnectionStatus("online");
+  scheduleRoomPolling();
+  await joinActiveRoom();
 });
 
 socket.on("disconnect", () => {
+  setConnectionStatus("offline");
   scheduleRoomPolling();
 });
 
 socket.on("connect_error", () => {
+  setConnectionStatus("offline");
   notify("Realtime socket failed. Using HTTP fallback.");
 });
 
@@ -1007,7 +1093,7 @@ socket.on("room:history", payload => {
   state.messagesByRoom.set(payload.roomId, Array.isArray(payload.messages) ? payload.messages : []);
 
   if (payload.roomId === state.activeRoomId) {
-    renderMessages();
+    renderMessages({ forceScroll: true });
   }
 });
 
@@ -1021,7 +1107,7 @@ socket.on("message:new", message => {
   state.messagesByRoom.set(message.roomId, existing.slice(-500));
 
   if (message.roomId === state.activeRoomId) {
-    renderMessages();
+    renderMessages({ forceScroll: message.userId === state.user?.id });
   }
 });
 
@@ -1040,6 +1126,7 @@ socket.on("room:presence", payload => {
 });
 
 syncMobileDrawerUi();
+setConnectionStatus("syncing");
 for (const element of document.querySelectorAll("form, input, textarea")) {
   element.setAttribute("autocomplete", "off");
 }
