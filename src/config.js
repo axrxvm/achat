@@ -15,6 +15,12 @@ const SESSION_COOKIE = "achat_session";
 const SESSION_COOKIE_MAX_AGE_DAYS = Math.max(1, Number(process.env.SESSION_COOKIE_MAX_AGE_DAYS || 30));
 const SESSION_COOKIE_MAX_AGE_SECONDS = SESSION_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60;
 const PUBLIC_DIR = path.join(__dirname, "../public");
+const MONGODB_MAIN_DB_URL = String(process.env.MONGODB_MAIN_DB_URL || "").trim();
+const MONGODB_MESSAGE_DB_URL = String(
+  process.env.MONGODB_MESSAGE_DB_URL || process.env.MONGODB_MESSAGES_DB_URL || ""
+).trim();
+const MONGODB_MAIN_DB_NAME = String(process.env.MONGODB_MAIN_DB_NAME || "").trim();
+const MONGODB_MESSAGE_DB_NAME = String(process.env.MONGODB_MESSAGE_DB_NAME || "").trim();
 
 module.exports = {
   PORT,
@@ -26,5 +32,9 @@ module.exports = {
   SESSION_COOKIE,
   SESSION_COOKIE_MAX_AGE_DAYS,
   SESSION_COOKIE_MAX_AGE_SECONDS,
-  PUBLIC_DIR
+  PUBLIC_DIR,
+  MONGODB_MAIN_DB_URL,
+  MONGODB_MESSAGE_DB_URL,
+  MONGODB_MAIN_DB_NAME,
+  MONGODB_MESSAGE_DB_NAME
 };

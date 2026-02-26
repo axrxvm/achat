@@ -1,10 +1,15 @@
 const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
+const { MongoClient } = require("mongodb");
+
+const config = require("./config");
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const DATA_FILE = path.join(DATA_DIR, "store.json");
 const MESSAGE_ID_REGEX = /^\d{10}$/;
+const DEFAULT_MAIN_DB_NAME = "achat_main";
+const DEFAULT_MESSAGE_DB_NAME = "achat_messages";
 
 const EMPTY_STORE = {
   users: [],
@@ -15,6 +20,7 @@ const EMPTY_STORE = {
 
 let state = JSON.parse(JSON.stringify(EMPTY_STORE));
 let persistQueue = Promise.resolve();
+let mongoCollections = null;
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const nowIso = () => new Date().toISOString();
@@ -126,34 +132,182 @@ const normalizeStore = value => {
   return next;
 };
 
-const persist = async () => {
-  const payload = JSON.stringify(state, null, 2);
-  const tempPath = `${DATA_FILE}.tmp`;
+const getDbNameFromUri = uri => {
+  if (!uri) {
+    return "";
+  }
 
-  persistQueue = persistQueue.then(async () => {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    await fs.writeFile(tempPath, payload, "utf8");
-    await fs.rename(tempPath, DATA_FILE);
-  });
+  try {
+    const parsed = new URL(uri);
+    return parsed.pathname.replace(/^\/+/, "").split("/")[0] || "";
+  } catch (error) {
+    return "";
+  }
+};
 
+const toMongoDocument = value => {
+  const normalizedId = String(value.id || "");
+  return {
+    ...clone(value),
+    id: normalizedId,
+    _id: normalizedId
+  };
+};
+
+const fromMongoDocument = value => {
+  if (!value) {
+    return value;
+  }
+
+  const next = { ...value };
+  delete next._id;
+  return next;
+};
+
+const ensureMongoConnections = async () => {
+  if (mongoCollections) {
+    return mongoCollections;
+  }
+
+  if (!config.MONGODB_MAIN_DB_URL) {
+    throw new Error("Missing MONGODB_MAIN_DB_URL");
+  }
+
+  if (!config.MONGODB_MESSAGE_DB_URL) {
+    throw new Error("Missing MONGODB_MESSAGE_DB_URL");
+  }
+
+  const mainClient = new MongoClient(config.MONGODB_MAIN_DB_URL);
+  const useSharedClient = config.MONGODB_MESSAGE_DB_URL === config.MONGODB_MAIN_DB_URL;
+  const messageClient = useSharedClient ? mainClient : new MongoClient(config.MONGODB_MESSAGE_DB_URL);
+
+  await Promise.all([mainClient.connect(), useSharedClient ? Promise.resolve() : messageClient.connect()]);
+
+  const mainDbName = config.MONGODB_MAIN_DB_NAME || getDbNameFromUri(config.MONGODB_MAIN_DB_URL) || DEFAULT_MAIN_DB_NAME;
+  const messageDbName =
+    config.MONGODB_MESSAGE_DB_NAME || getDbNameFromUri(config.MONGODB_MESSAGE_DB_URL) || DEFAULT_MESSAGE_DB_NAME;
+
+  const mainDb = mainClient.db(mainDbName);
+  const messageDb = messageClient.db(messageDbName);
+
+  mongoCollections = {
+    users: mainDb.collection("users"),
+    rooms: mainDb.collection("rooms"),
+    sessions: mainDb.collection("sessions"),
+    messages: messageDb.collection("messages")
+  };
+
+  await Promise.all([
+    mongoCollections.users.createIndex({ oauthKey: 1 }),
+    mongoCollections.rooms.createIndex({ ownerUserId: 1 }),
+    mongoCollections.sessions.createIndex({ userId: 1 }),
+    mongoCollections.messages.createIndex({ roomId: 1, createdAt: 1 }),
+    mongoCollections.messages.createIndex({ userId: 1 })
+  ]);
+
+  return mongoCollections;
+};
+
+const queueWrite = async operation => {
+  persistQueue = persistQueue.then(operation);
   return persistQueue;
+};
+
+const syncCollection = async (collection, entries) => {
+  await collection.deleteMany({});
+  if (entries.length > 0) {
+    await collection.insertMany(entries.map(toMongoDocument));
+  }
+};
+
+const syncStateToMongo = async () => {
+  const snapshot = clone(state);
+  await queueWrite(async () => {
+    const collections = await ensureMongoConnections();
+    await Promise.all([
+      syncCollection(collections.users, snapshot.users),
+      syncCollection(collections.rooms, snapshot.rooms),
+      syncCollection(collections.sessions, snapshot.sessions),
+      syncCollection(collections.messages, snapshot.messages)
+    ]);
+  });
+};
+
+const persistUser = async user => {
+  await queueWrite(async () => {
+    const collections = await ensureMongoConnections();
+    await collections.users.replaceOne({ _id: String(user.id) }, toMongoDocument(user), { upsert: true });
+  });
+};
+
+const persistRoom = async room => {
+  await queueWrite(async () => {
+    const collections = await ensureMongoConnections();
+    await collections.rooms.replaceOne({ _id: String(room.id) }, toMongoDocument(room), { upsert: true });
+  });
+};
+
+const persistSession = async session => {
+  await queueWrite(async () => {
+    const collections = await ensureMongoConnections();
+    await collections.sessions.replaceOne({ _id: String(session.id) }, toMongoDocument(session), { upsert: true });
+  });
+};
+
+const deletePersistedSession = async sessionId => {
+  await queueWrite(async () => {
+    const collections = await ensureMongoConnections();
+    await collections.sessions.deleteOne({ _id: String(sessionId) });
+  });
+};
+
+const persistMessageAndRoom = async ({ message, room }) => {
+  await queueWrite(async () => {
+    const collections = await ensureMongoConnections();
+    await collections.messages.replaceOne({ _id: String(message.id) }, toMongoDocument(message), { upsert: true });
+    await collections.rooms.replaceOne({ _id: String(room.id) }, toMongoDocument(room), { upsert: true });
+  });
+};
+
+const loadLegacyStoreFile = async () => {
+  try {
+    const raw = await fs.readFile(DATA_FILE, "utf8");
+    return normalizeStore(JSON.parse(raw));
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
+  }
 };
 
 const ensureStore = async () => {
   await fs.mkdir(DATA_DIR, { recursive: true });
 
-  try {
-    const raw = await fs.readFile(DATA_FILE, "utf8");
-    state = normalizeStore(JSON.parse(raw));
-    await persist();
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      throw error;
-    }
+  const collections = await ensureMongoConnections();
+  const [users, rooms, sessions, messages] = await Promise.all([
+    collections.users.find({}).toArray(),
+    collections.rooms.find({}).toArray(),
+    collections.sessions.find({}).toArray(),
+    collections.messages.find({}).toArray()
+  ]);
 
-    state = clone(EMPTY_STORE);
-    await persist();
+  const hasMongoData = users.length > 0 || rooms.length > 0 || sessions.length > 0 || messages.length > 0;
+  if (hasMongoData) {
+    state = normalizeStore({
+      users: users.map(fromMongoDocument),
+      rooms: rooms.map(fromMongoDocument),
+      sessions: sessions.map(fromMongoDocument),
+      messages: messages.map(fromMongoDocument)
+    });
+    await syncStateToMongo();
+    return;
   }
+
+  const legacyState = await loadLegacyStoreFile();
+  state = legacyState || clone(EMPTY_STORE);
+  await syncStateToMongo();
 };
 
 const findUserById = userId => state.users.find(user => user.id === String(userId));
@@ -282,7 +436,7 @@ const upsertOAuthUser = async profile => {
     user.lastLoginAt = nowIso();
   }
 
-  await persist();
+  await persistUser(user);
   return clone(user);
 };
 
@@ -295,7 +449,7 @@ const createSession = async userId => {
   };
 
   state.sessions.push(session);
-  await persist();
+  await persistSession(session);
   return clone(session);
 };
 
@@ -306,7 +460,7 @@ const touchSession = async sessionId => {
   }
 
   session.lastSeenAt = nowIso();
-  await persist();
+  await persistSession(session);
   return clone(session);
 };
 
@@ -315,7 +469,7 @@ const deleteSession = async sessionId => {
   state.sessions = state.sessions.filter(session => session.id !== String(sessionId));
 
   if (state.sessions.length !== before) {
-    await persist();
+    await deletePersistedSession(sessionId);
   }
 };
 
@@ -343,7 +497,7 @@ const createRoom = async ({ name, ownerUserId, isPrivate = false }) => {
   };
 
   state.rooms.push(room);
-  await persist();
+  await persistRoom(room);
   return clone(room);
 };
 
@@ -385,7 +539,7 @@ const joinRoom = async ({ roomId, userId }) => {
     if (!room.pendingUserIds.includes(normalizedUserId)) {
       room.pendingUserIds.push(normalizedUserId);
       touchRoom(room);
-      await persist();
+      await persistRoom(room);
     }
 
     return { room: clone(room), status: "pending" };
@@ -394,7 +548,7 @@ const joinRoom = async ({ roomId, userId }) => {
   room.pendingUserIds = room.pendingUserIds.filter(entry => entry !== normalizedUserId);
   room.memberUserIds.push(normalizedUserId);
   touchRoom(room);
-  await persist();
+  await persistRoom(room);
 
   return { room: clone(room), status: "member" };
 };
@@ -421,7 +575,7 @@ const leaveRoom = async ({ roomId, userId }) => {
   }
 
   touchRoom(room);
-  await persist();
+  await persistRoom(room);
 
   return clone(room);
 };
@@ -451,7 +605,7 @@ const kickMember = async ({ roomId, ownerUserId, targetUserId }) => {
   room.pendingUserIds = room.pendingUserIds.filter(entry => entry !== normalizedTargetUserId);
 
   touchRoom(room);
-  await persist();
+  await persistRoom(room);
 
   return clone(room);
 };
@@ -469,7 +623,7 @@ const setRoomPrivacy = async ({ roomId, ownerUserId, isPrivate }) => {
 
   room.isPrivate = Boolean(isPrivate);
   touchRoom(room);
-  await persist();
+  await persistRoom(room);
 
   return clone(room);
 };
@@ -497,7 +651,7 @@ const approvePendingUser = async ({ roomId, ownerUserId, targetUserId }) => {
   }
 
   touchRoom(room);
-  await persist();
+  await persistRoom(room);
 
   return clone(room);
 };
@@ -521,7 +675,7 @@ const rejectPendingUser = async ({ roomId, ownerUserId, targetUserId }) => {
 
   room.pendingUserIds = room.pendingUserIds.filter(entry => entry !== normalizedTargetUserId);
   touchRoom(room);
-  await persist();
+  await persistRoom(room);
 
   return clone(room);
 };
@@ -556,7 +710,7 @@ const addMessage = async ({ roomId, userId, text }) => {
 
   state.messages.push(message);
   touchRoom(room);
-  await persist();
+  await persistMessageAndRoom({ message, room });
 
   return formatMessageForClient(message);
 };
@@ -689,7 +843,7 @@ const updateUserDisplayName = async ({ userId, displayName }) => {
 
   user.displayName = sanitizeDisplayName(displayName);
   user.displayNameCustom = true;
-  await persist();
+  await persistUser(user);
   return getUserById(user.id);
 };
 
