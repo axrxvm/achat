@@ -222,7 +222,7 @@ label {
   border-radius: 12px;
   text-align: left;
   padding: 10px;
-  cursor: pointer;
+  cursor: grab;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -235,6 +235,19 @@ label {
 .room-item:hover {
   transform: translateY(-1px);
   border-color: rgba(189, 200, 225, 0.24);
+}
+
+.room-item.dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.room-item.drop-before {
+  box-shadow: inset 0 2px 0 rgba(83, 201, 171, 0.8);
+}
+
+.room-item.drop-after {
+  box-shadow: inset 0 -2px 0 rgba(83, 201, 171, 0.8);
 }
 
 .room-item.active {

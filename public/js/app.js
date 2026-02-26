@@ -16,6 +16,8 @@ const socket = io({
 
 const SOCKET_ACK_TIMEOUT_MS = 3500;
 const ROOM_POLL_INTERVAL_MS = 8000;
+const ROOM_ORDER_COOKIE_PREFIX = "achat_room_order_";
+const ROOM_ORDER_COOKIE_TTL_SECONDS = 60 * 60 * 24 * 365;
 
 const authView = document.getElementById("auth-view");
 const appView = document.getElementById("app-view");
@@ -70,6 +72,10 @@ let memberContextTargetUserId = null;
 let forceNextMessageStickToBottom = false;
 let lastRenderedMessageKey = "";
 let lastRenderedMessageRoomId = null;
+let draggingRoomId = null;
+let dragTargetRoomId = null;
+let dragTargetPosition = "before";
+let suppressRoomClickUntil = 0;
 
 const formatTime = isoDate => {
   const date = new Date(isoDate);
@@ -191,6 +197,133 @@ const request = async (url, options = {}) => {
   }
 
   return data;
+};
+
+const getRoomOrderCookieName = () => `${ROOM_ORDER_COOKIE_PREFIX}${state.user?.id || "guest"}`;
+
+const readCookie = name => {
+  const target = `${name}=`;
+  const parts = document.cookie.split("; ");
+  for (const part of parts) {
+    if (part.startsWith(target)) {
+      return decodeURIComponent(part.slice(target.length));
+    }
+  }
+
+  return "";
+};
+
+const writeCookie = ({ name, value, maxAgeSeconds = ROOM_ORDER_COOKIE_TTL_SECONDS }) => {
+  document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAgeSeconds}; Path=/; SameSite=Lax`;
+};
+
+const getStoredRoomOrder = () =>
+  readCookie(getRoomOrderCookieName())
+    .split(".")
+    .map(item => String(item || "").trim())
+    .filter(Boolean);
+
+const setStoredRoomOrder = roomIds => {
+  if (!state.user) {
+    return;
+  }
+
+  const seen = new Set();
+  const normalized = roomIds
+    .map(roomId => String(roomId || "").trim())
+    .filter(roomId => {
+      if (!roomId || seen.has(roomId)) {
+        return false;
+      }
+
+      seen.add(roomId);
+      return true;
+    });
+
+  if (normalized.length === 0) {
+    return;
+  }
+
+  writeCookie({
+    name: getRoomOrderCookieName(),
+    value: normalized.join(".")
+  });
+};
+
+const applyStoredRoomOrder = rooms => {
+  if (!Array.isArray(rooms) || rooms.length === 0 || !state.user) {
+    return Array.isArray(rooms) ? rooms : [];
+  }
+
+  const roomIds = rooms.map(room => String(room.id));
+  const validIds = new Set(roomIds);
+  const storedOrder = getStoredRoomOrder().filter(roomId => validIds.has(roomId));
+  const seen = new Set(storedOrder);
+  const mergedOrder = [...storedOrder];
+
+  for (const roomId of roomIds) {
+    if (seen.has(roomId)) {
+      continue;
+    }
+
+    seen.add(roomId);
+    mergedOrder.push(roomId);
+  }
+
+  const orderIndex = new Map(mergedOrder.map((roomId, index) => [roomId, index]));
+  const sortedRooms = [...rooms].sort((left, right) => orderIndex.get(String(left.id)) - orderIndex.get(String(right.id)));
+
+  const needsPersist =
+    mergedOrder.length !== storedOrder.length || mergedOrder.some((roomId, index) => roomId !== storedOrder[index]);
+  if (needsPersist) {
+    setStoredRoomOrder(mergedOrder);
+  }
+
+  return sortedRooms;
+};
+
+const clearRoomDropIndicators = () => {
+  for (const element of roomList.querySelectorAll(".room-item.drop-before, .room-item.drop-after")) {
+    element.classList.remove("drop-before", "drop-after");
+  }
+};
+
+const clearRoomDragState = () => {
+  draggingRoomId = null;
+  dragTargetRoomId = null;
+  dragTargetPosition = "before";
+  clearRoomDropIndicators();
+
+  for (const element of roomList.querySelectorAll(".room-item.dragging")) {
+    element.classList.remove("dragging");
+  }
+};
+
+const reorderRooms = ({ sourceRoomId, targetRoomId, position = "before" }) => {
+  const sourceId = String(sourceRoomId || "");
+  const targetId = String(targetRoomId || "");
+  if (!sourceId || !targetId || sourceId === targetId) {
+    return;
+  }
+
+  const nextRooms = [...state.rooms];
+  const sourceIndex = nextRooms.findIndex(room => String(room.id) === sourceId);
+  if (sourceIndex < 0) {
+    return;
+  }
+
+  const [movedRoom] = nextRooms.splice(sourceIndex, 1);
+  const targetIndex = nextRooms.findIndex(room => String(room.id) === targetId);
+  if (targetIndex < 0) {
+    return;
+  }
+
+  const insertAt = position === "after" ? targetIndex + 1 : targetIndex;
+  nextRooms.splice(insertAt, 0, movedRoom);
+
+  state.rooms = nextRooms;
+  setStoredRoomOrder(nextRooms.map(room => room.id));
+  renderRooms();
 };
 
 const getActiveRoom = () => state.rooms.find(room => room.id === state.activeRoomId) || null;
@@ -552,7 +685,7 @@ const renderRooms = () => {
       const ownerWaitlistHint = room.isOwner && room.pendingCount > 0 ? ` · ${room.pendingCount} waiting` : "";
 
       return `
-        <button class="room-item ${active ? "active" : ""} ${pending ? "pending" : ""}" data-room-id="${room.id}">
+        <button class="room-item ${active ? "active" : ""} ${pending ? "pending" : ""}" data-room-id="${room.id}" draggable="true" title="Drag to reorder">
           <span class="room-item__name"># ${escapeHtml(room.name)} ${room.isPrivate ? '<span class="room-item__flag">(private)</span>' : ""}</span>
           <span class="room-item__meta">${room.id} · ${roomType} · ${room.memberCount} members${ownerWaitlistHint}</span>
           <span class="room-item__preview">${escapeHtml(preview)}</span>
@@ -570,7 +703,7 @@ const renderRooms = () => {
 const loadRooms = async ({ showErrors = true } = {}) => {
   try {
     const data = await request("/api/rooms");
-    state.rooms = data.rooms || [];
+    state.rooms = applyStoredRoomOrder(data.rooms || []);
     renderRooms();
   } catch (error) {
     if (showErrors) {
@@ -698,7 +831,7 @@ const refreshRoomsAndActive = async () => {
 const bootAuthenticated = async () => {
   const data = await request("/api/me");
   state.user = data.user;
-  state.rooms = data.rooms || [];
+  state.rooms = applyStoredRoomOrder(data.rooms || []);
 
   authView.classList.add("hidden");
   appView.classList.remove("hidden");
@@ -794,6 +927,10 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("scroll", hideMemberContextMenu, true);
 
 roomList.addEventListener("click", event => {
+  if (Date.now() < suppressRoomClickUntil) {
+    return;
+  }
+
   const target = event.target.closest("[data-room-id]");
   if (!target) {
     return;
@@ -806,6 +943,77 @@ roomList.addEventListener("click", event => {
   }
 
   selectActiveRoom(roomId);
+});
+
+roomList.addEventListener("dragstart", event => {
+  const sourceItem = event.target.closest(".room-item[data-room-id]");
+  if (!sourceItem) {
+    return;
+  }
+
+  draggingRoomId = String(sourceItem.getAttribute("data-room-id") || "");
+  sourceItem.classList.add("dragging");
+
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", draggingRoomId);
+  }
+});
+
+roomList.addEventListener("dragover", event => {
+  if (!draggingRoomId) {
+    return;
+  }
+
+  const targetItem = event.target.closest(".room-item[data-room-id]");
+  if (!targetItem) {
+    return;
+  }
+
+  const targetRoomId = String(targetItem.getAttribute("data-room-id") || "");
+  if (!targetRoomId || targetRoomId === draggingRoomId) {
+    return;
+  }
+
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+
+  const targetRect = targetItem.getBoundingClientRect();
+  const nextPosition = event.clientY > targetRect.top + targetRect.height / 2 ? "after" : "before";
+
+  dragTargetRoomId = targetRoomId;
+  dragTargetPosition = nextPosition;
+
+  clearRoomDropIndicators();
+  targetItem.classList.add(nextPosition === "after" ? "drop-after" : "drop-before");
+});
+
+roomList.addEventListener("drop", event => {
+  if (!draggingRoomId) {
+    return;
+  }
+
+  event.preventDefault();
+
+  const targetItem = event.target.closest(".room-item[data-room-id]");
+  if (targetItem) {
+    dragTargetRoomId = String(targetItem.getAttribute("data-room-id") || dragTargetRoomId || "");
+  }
+
+  reorderRooms({
+    sourceRoomId: draggingRoomId,
+    targetRoomId: dragTargetRoomId,
+    position: dragTargetPosition
+  });
+
+  suppressRoomClickUntil = Date.now() + 180;
+  clearRoomDragState();
+});
+
+roomList.addEventListener("dragend", () => {
+  clearRoomDragState();
 });
 
 memberList.addEventListener("contextmenu", event => {
@@ -1063,7 +1271,7 @@ socket.on("rooms:update", rooms => {
   const previousRooms = state.rooms;
   const previousActive = state.activeRoomId;
   const previousActiveRoom = previousRooms.find(room => room.id === previousActive) || null;
-  state.rooms = Array.isArray(rooms) ? rooms : [];
+  state.rooms = applyStoredRoomOrder(Array.isArray(rooms) ? rooms : []);
   renderRooms();
 
   if (!state.activeRoomId) {
