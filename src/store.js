@@ -22,6 +22,9 @@ const EMPTY_STORE = {
 let state = JSON.parse(JSON.stringify(EMPTY_STORE));
 let persistQueue = Promise.resolve();
 let mongoCollections = null;
+let messageIdSet = new Set();
+let latestMessageByRoomId = new Map();
+let messagesByRoomId = new Map();
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const nowIso = () => new Date().toISOString();
@@ -311,12 +314,14 @@ const ensureStore = async () => {
       sessions: sessions.map(fromMongoDocument),
       messages: messages.map(fromMongoDocument)
     });
+    rebuildMessageIndexes();
     await syncStateToMongo();
     return;
   }
 
   const legacyState = await loadLegacyStoreFile();
   state = legacyState || clone(EMPTY_STORE);
+  rebuildMessageIndexes();
   await syncStateToMongo();
 };
 
@@ -327,6 +332,63 @@ const findDeletedUser = () => state.users.find(user => user.oauthKey === DELETED
 const toTimestamp = value => {
   const time = new Date(value || 0).getTime();
   return Number.isFinite(time) ? time : 0;
+};
+
+const rebuildMessageIndexes = () => {
+  messageIdSet = new Set();
+  latestMessageByRoomId = new Map();
+  messagesByRoomId = new Map();
+
+  for (const message of state.messages) {
+    const messageId = String(message?.id || "");
+    if (messageId) {
+      messageIdSet.add(messageId);
+    }
+
+    const roomId = String(message?.roomId || "");
+    if (!roomId) {
+      continue;
+    }
+
+    const roomMessages = messagesByRoomId.get(roomId) || [];
+    roomMessages.push(message);
+    messagesByRoomId.set(roomId, roomMessages);
+
+    const existing = latestMessageByRoomId.get(roomId);
+    if (!existing || toTimestamp(message.createdAt) >= toTimestamp(existing.createdAt)) {
+      latestMessageByRoomId.set(roomId, message);
+    }
+  }
+};
+
+const getMessagesForRoomEntries = roomId => {
+  const normalizedRoomId = String(roomId || "");
+  if (!normalizedRoomId) {
+    return [];
+  }
+
+  return messagesByRoomId.get(normalizedRoomId) || [];
+};
+
+const refreshLatestMessageForRoom = roomId => {
+  const normalizedRoomId = String(roomId || "");
+  if (!normalizedRoomId) {
+    return;
+  }
+
+  const roomMessages = getMessagesForRoomEntries(normalizedRoomId);
+  let latest = null;
+  for (const message of roomMessages) {
+    if (!latest || toTimestamp(message.createdAt) >= toTimestamp(latest.createdAt)) {
+      latest = message;
+    }
+  }
+
+  if (latest) {
+    latestMessageByRoomId.set(normalizedRoomId, latest);
+  } else {
+    latestMessageByRoomId.delete(normalizedRoomId);
+  }
 };
 
 const touchRoom = room => {
@@ -659,6 +721,7 @@ const deleteRoom = async ({ roomId, ownerUserId }) => {
   const impactedUserIds = new Set(getRoomUserIds(room.id));
   state.rooms = state.rooms.filter(entry => entry.id !== room.id);
   state.messages = state.messages.filter(message => message.roomId !== room.id);
+  rebuildMessageIndexes();
   await syncStateToMongo();
 
   return {
@@ -746,6 +809,7 @@ const deleteUserAccount = async ({ userId }) => {
   }
 
   state.users = state.users.filter(entry => entry.id !== normalizedUserId);
+  rebuildMessageIndexes();
   await syncStateToMongo();
 
   return {
@@ -890,7 +954,7 @@ const addMessage = async ({ roomId, userId, text }) => {
   }
 
   const message = {
-    id: generateUniqueNumericId(10, new Set(state.messages.map(entry => entry.id))),
+    id: generateUniqueNumericId(10, messageIdSet),
     roomId: String(roomId),
     userId: normalizedUserId,
     text: normalizedText,
@@ -898,6 +962,11 @@ const addMessage = async ({ roomId, userId, text }) => {
   };
 
   state.messages.push(message);
+  messageIdSet.add(message.id);
+  const roomMessages = messagesByRoomId.get(message.roomId) || [];
+  roomMessages.push(message);
+  messagesByRoomId.set(message.roomId, roomMessages);
+  refreshLatestMessageForRoom(message.roomId);
   touchRoom(room);
   await persistMessageAndRoom({ message, room });
 
@@ -924,6 +993,14 @@ const deleteMessage = async ({ roomId, messageId, requesterUserId }) => {
   }
 
   state.messages = state.messages.filter(entry => entry.id !== normalizedMessageId);
+  messageIdSet.delete(normalizedMessageId);
+  const roomMessages = getMessagesForRoomEntries(room.id).filter(entry => String(entry.id) !== normalizedMessageId);
+  if (roomMessages.length > 0) {
+    messagesByRoomId.set(String(room.id), roomMessages);
+  } else {
+    messagesByRoomId.delete(String(room.id));
+  }
+  refreshLatestMessageForRoom(room.id);
   touchRoom(room);
   await deletePersistedMessageAndRoom({ messageId: normalizedMessageId, room });
 
@@ -946,7 +1023,7 @@ const getMessagesPageForRoom = ({ roomId, limit = 80, beforeMessageId = "" } = {
 
   const normalizedRoomId = String(roomId);
   const normalizedBeforeMessageId = String(beforeMessageId || "").trim();
-  const roomMessages = state.messages.filter(message => message.roomId === normalizedRoomId);
+  const roomMessages = getMessagesForRoomEntries(normalizedRoomId);
   const normalizedLimit = normalizeMessagePageLimit(limit);
 
   let endExclusive = roomMessages.length;
@@ -1022,21 +1099,7 @@ const getRoomUserIds = roomId => {
 };
 
 const getLatestMessageByRoomId = () => {
-  const latestByRoomId = new Map();
-
-  for (const message of state.messages) {
-    const roomId = String(message.roomId || "");
-    if (!roomId) {
-      continue;
-    }
-
-    const existing = latestByRoomId.get(roomId);
-    if (!existing || toTimestamp(message.createdAt) >= toTimestamp(existing.createdAt)) {
-      latestByRoomId.set(roomId, message);
-    }
-  }
-
-  return latestByRoomId;
+  return latestMessageByRoomId;
 };
 
 const listRoomsForUser = userId => {

@@ -473,6 +473,11 @@ const registerRoutes = ({
       io.to(`room:${snapshot.room.id}`).emit("message:new", message);
       res.status(201).json({ message });
       setImmediate(() => {
+        if (typeof realtime.scheduleRoomsUpdateForRoomUsers === "function") {
+          realtime.scheduleRoomsUpdateForRoomUsers(snapshot.room.id);
+          return;
+        }
+
         realtime.sendRoomsUpdateForRoomUsers(snapshot.room.id);
       });
     } catch (error) {
@@ -504,6 +509,11 @@ const registerRoutes = ({
         messageId: result.messageId
       });
       setImmediate(() => {
+        if (typeof realtime.scheduleRoomsUpdateForRoomUsers === "function") {
+          realtime.scheduleRoomsUpdateForRoomUsers(snapshot.room.id);
+          return;
+        }
+
         realtime.sendRoomsUpdateForRoomUsers(snapshot.room.id);
       });
     } catch (error) {

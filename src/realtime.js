@@ -14,8 +14,10 @@ const setupRealtime = ({
   addMessage
 }) => {
   const ROOM_HISTORY_LIMIT = 80;
+  const ROOMS_UPDATE_BATCH_DELAY_MS = 140;
   const onlineCounts = new Map();
   const socketsByUser = new Map();
+  const pendingRoomUpdateTimers = new Map();
   const getSocketById = socketId => {
     if (io?.sockets?.connected && io.sockets.connected[socketId]) {
       return io.sockets.connected[socketId];
@@ -85,6 +87,24 @@ const setupRealtime = ({
     for (const userId of getRoomUserIds(roomId)) {
       sendRoomsUpdateToUser(userId);
     }
+  };
+
+  const scheduleRoomsUpdateForRoomUsers = (roomId, delayMs = ROOMS_UPDATE_BATCH_DELAY_MS) => {
+    const normalizedRoomId = String(roomId || "").trim();
+    if (!normalizedRoomId) {
+      return;
+    }
+
+    if (pendingRoomUpdateTimers.has(normalizedRoomId)) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      pendingRoomUpdateTimers.delete(normalizedRoomId);
+      sendRoomsUpdateForRoomUsers(normalizedRoomId);
+    }, Math.max(0, Number(delayMs) || 0));
+
+    pendingRoomUpdateTimers.set(normalizedRoomId, timer);
   };
   const emitPresenceForUserRooms = userId => {
     for (const roomId of getMemberRoomIdsForUser(userId)) {
@@ -336,7 +356,7 @@ const setupRealtime = ({
         io.to(`room:${roomId}`).emit("message:new", message);
         callback({ ok: true, message });
         setImmediate(() => {
-          sendRoomsUpdateForRoomUsers(roomId);
+          scheduleRoomsUpdateForRoomUsers(roomId);
         });
       } catch (error) {
         callback({ error: error.message || "Unable to send message" });
@@ -376,6 +396,7 @@ const setupRealtime = ({
     emitPresence,
     getRoomSnapshotForUser,
     getRoomsPayloadForUser,
+    scheduleRoomsUpdateForRoomUsers,
     sendRoomsUpdateForRoomUsers,
     sendRoomsUpdateToUser
   };

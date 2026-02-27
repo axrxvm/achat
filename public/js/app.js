@@ -143,6 +143,7 @@ const IMAGE_EMBED_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bm
 const VIDEO_EMBED_EXTENSIONS = new Set(["mp4", "webm", "mov", "mkv"]);
 const AUDIO_EMBED_EXTENSIONS = new Set(["mp3", "wav", "ogg", "m4a", "flac"]);
 const TEXT_FRAME_EXTENSIONS = new Set(["txt", "md", "json", "js", "ts", "css", "html", "log", "git"]);
+const CATBOX_FILE_HOSTNAMES = new Set(["files.catbox.moe", "litter.catbox.moe", "catbox.moe"]);
 
 const splitUrlAndTrailing = rawUrl => {
   let url = String(rawUrl || "");
@@ -240,6 +241,72 @@ const toAbsoluteUrl = (value, baseUrl) => {
   } catch (error) {
     return "";
   }
+};
+
+const isUrlHostedOn = (urlValue, hostnames) => {
+  const hostname = getUrlHostname(urlValue).toLowerCase();
+  return hostnames.has(hostname);
+};
+
+const parseStandaloneUrlLine = line => {
+  const trimmed = String(line || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const matches = trimmed.match(URL_REGEX) || [];
+  if (matches.length !== 1 || matches[0] !== trimmed) {
+    return "";
+  }
+
+  const normalized = normalizeUrlCandidate(trimmed);
+  return normalized || "";
+};
+
+const partitionMessageText = value => {
+  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+  const bodyLines = [];
+  const attachmentUrls = [];
+  const seenAttachmentUrls = new Set();
+
+  for (const line of lines) {
+    const maybeUrl = parseStandaloneUrlLine(line);
+    if (maybeUrl && isUrlHostedOn(maybeUrl, CATBOX_FILE_HOSTNAMES)) {
+      if (!seenAttachmentUrls.has(maybeUrl)) {
+        seenAttachmentUrls.add(maybeUrl);
+        attachmentUrls.push(maybeUrl);
+      }
+      continue;
+    }
+
+    bodyLines.push(line);
+  }
+
+  const bodyText = bodyLines.join("\n").trim();
+  const embedUrls = [];
+  const seenEmbedUrls = new Set();
+  const pushEmbedUrl = url => {
+    const normalized = String(url || "").trim();
+    if (!normalized || seenEmbedUrls.has(normalized)) {
+      return;
+    }
+
+    seenEmbedUrls.add(normalized);
+    embedUrls.push(normalized);
+  };
+
+  for (const url of extractUrlsFromText(bodyText)) {
+    pushEmbedUrl(url);
+  }
+
+  for (const url of attachmentUrls) {
+    pushEmbedUrl(url);
+  }
+
+  return {
+    bodyText,
+    embedUrls
+  };
 };
 
 const toObject = value => (value && typeof value === "object" ? value : {});
@@ -459,17 +526,35 @@ const queueWebsitePreviewFetch = url => {
   void fetchWebsitePreview(normalizedUrl);
 };
 
-const renderMessageEmbeds = value => {
-  const urls = extractUrlsFromText(value);
-  if (urls.length === 0) {
+const renderMessageEmbeds = urls => {
+  const urlList = Array.isArray(urls) ? urls : [];
+  if (urlList.length === 0) {
     return "";
   }
 
-  const embeds = urls
+  const uniqueUrls = [];
+  const seenUrls = new Set();
+  for (const url of urlList) {
+    const normalizedUrl = String(url || "").trim();
+    if (!normalizedUrl || seenUrls.has(normalizedUrl)) {
+      continue;
+    }
+
+    seenUrls.add(normalizedUrl);
+    uniqueUrls.push(normalizedUrl);
+  }
+
+  const urlsToRender = uniqueUrls;
+  if (urlsToRender.length === 0) {
+    return "";
+  }
+
+  const embeds = urlsToRender
     .map(url => {
       const extension = getUrlExtension(url);
       const safeUrl = escapeHtml(url);
       const label = escapeHtml(url.split("/").pop() || url);
+      const hostedOnCatbox = isUrlHostedOn(url, CATBOX_FILE_HOSTNAMES);
 
       if (IMAGE_EMBED_EXTENSIONS.has(extension)) {
         return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer nofollow"><img class="message-embed message-embed--image" src="${safeUrl}" alt="${label}" loading="lazy" /></a>`;
@@ -487,7 +572,7 @@ const renderMessageEmbeds = value => {
         return `<iframe class="message-embed message-embed--frame" src="${safeUrl}" loading="lazy" sandbox=""></iframe>`;
       }
 
-      if (!extension) {
+      if (!extension && !hostedOnCatbox) {
         queueWebsitePreviewFetch(url);
         return renderWebsiteEmbedCard(url);
       }
@@ -526,7 +611,8 @@ const canDeleteMessage = message => {
 const renderMessageTile = message => {
   const isSelf = message.userId === state.user?.id;
   const isOptimistic = Boolean(message.optimistic);
-  const embeds = renderMessageEmbeds(message.text);
+  const { bodyText, embedUrls } = partitionMessageText(message.text);
+  const embeds = renderMessageEmbeds(embedUrls);
   const messageId = escapeHtml(String(message.id || ""));
   return `
     <article class="message ${isSelf ? "self" : ""} ${isOptimistic ? "sending" : ""}" data-message-id="${messageId}">
@@ -537,7 +623,7 @@ const renderMessageTile = message => {
           ${isOptimistic ? '<span class="message-send-state">Sending...</span>' : ""}
         </span>
       </header>
-      <p>${linkifyMessageText(message.text)}</p>
+      ${bodyText ? `<p>${linkifyMessageText(bodyText)}</p>` : ""}
       ${embeds}
     </article>
   `;
@@ -652,14 +738,13 @@ const uploadComposerFiles = async files => {
     return [];
   }
 
-  const payloadFiles = [];
-  for (const file of normalizedFiles) {
-    payloadFiles.push({
+  const payloadFiles = await Promise.all(
+    normalizedFiles.map(async file => ({
       name: file.name,
       mimeType: file.type || "application/octet-stream",
       dataBase64: await fileToBase64(file)
-    });
-  }
+    }))
+  );
 
   const result = await request("/api/uploads/catbox", {
     method: "POST",
@@ -761,7 +846,7 @@ const prependOlderMessagesToState = ({ roomId, messages }) => {
 const reconcileOwnOptimisticMessage = confirmedMessage => {
   const roomId = String(confirmedMessage?.roomId || "").trim();
   if (!roomId || !confirmedMessage?.id || String(confirmedMessage.userId || "") !== String(state.user?.id || "")) {
-    return false;
+    return "";
   }
 
   const roomMessages = state.messagesByRoom.get(roomId) || [];
@@ -770,14 +855,15 @@ const reconcileOwnOptimisticMessage = confirmedMessage => {
   );
 
   if (!optimisticMessage) {
-    return false;
+    return "";
   }
 
-  return replaceMessageInState({
+  const replaced = replaceMessageInState({
     roomId,
     targetMessageId: optimisticMessage.id,
     nextMessage: confirmedMessage
   });
+  return replaced ? String(optimisticMessage.id || "") : "";
 };
 
 const isMobileLayout = () => window.matchMedia("(max-width: 860px)").matches;
@@ -1439,6 +1525,55 @@ const renderMembers = () => {
   memberList.innerHTML = memberItems + waitlistSection;
 };
 
+const setLastRenderedMessageState = ({ key, roomId, count, lastMessageId }) => {
+  lastRenderedMessageKey = String(key || "");
+  lastRenderedMessageRoomId = roomId || null;
+  lastRenderedMessageCount = Number(count) || 0;
+  lastRenderedLastMessageId = String(lastMessageId || "");
+};
+
+const buildFilledMessageRenderKey = ({ roomId, messages }) => {
+  const lastMessage = messages[messages.length - 1];
+  return `filled:${roomId}:${messages.length}:${lastMessage?.id || ""}:${lastMessage?.createdAt || ""}:${lastMessage?.userId || ""}`;
+};
+
+const replaceRenderedMessageTile = ({ roomId, targetMessageId, nextMessage, forceScroll = false } = {}) => {
+  const normalizedRoomId = String(roomId || "");
+  const normalizedTargetId = String(targetMessageId || "");
+  if (!normalizedRoomId || !normalizedTargetId || !nextMessage?.id) {
+    return false;
+  }
+
+  if (normalizedRoomId !== String(state.activeRoomId || "")) {
+    return false;
+  }
+
+  const renderedMessages = [...messageList.querySelectorAll(".message[data-message-id]")];
+  const targetElement = renderedMessages.find(entry => String(entry.getAttribute("data-message-id") || "") === normalizedTargetId);
+  if (!targetElement) {
+    return false;
+  }
+
+  const shouldStickToBottom = forceScroll || forceNextMessageStickToBottom || isMessageListNearBottom();
+  targetElement.outerHTML = renderMessageTile(nextMessage);
+  if (shouldStickToBottom) {
+    messageList.scrollTop = messageList.scrollHeight;
+  }
+
+  const roomMessages = state.messagesByRoom.get(normalizedRoomId) || [];
+  if (roomMessages.length > 0) {
+    setLastRenderedMessageState({
+      key: buildFilledMessageRenderKey({ roomId: normalizedRoomId, messages: roomMessages }),
+      roomId: normalizedRoomId,
+      count: roomMessages.length,
+      lastMessageId: roomMessages[roomMessages.length - 1]?.id || ""
+    });
+  }
+
+  forceNextMessageStickToBottom = false;
+  return true;
+};
+
 const renderMessages = ({ forceScroll = false } = {}) => {
   const room = getActiveRoom();
   const roomId = state.activeRoomId;
@@ -1450,10 +1585,12 @@ const renderMessages = ({ forceScroll = false } = {}) => {
     const nextKey = "no-room";
     if (nextKey !== lastRenderedMessageKey) {
       messageList.innerHTML = '<div class="empty-chat">Pick a room or create one to start chatting.</div>';
-      lastRenderedMessageKey = nextKey;
-      lastRenderedMessageRoomId = null;
-      lastRenderedMessageCount = 0;
-      lastRenderedLastMessageId = "";
+      setLastRenderedMessageState({
+        key: nextKey,
+        roomId: null,
+        count: 0,
+        lastMessageId: ""
+      });
     }
     forceNextMessageStickToBottom = false;
     return;
@@ -1464,10 +1601,12 @@ const renderMessages = ({ forceScroll = false } = {}) => {
     if (nextKey !== lastRenderedMessageKey) {
       messageList.innerHTML =
         '<div class="room-locked">This is a private room. Your request is pending owner approval, so chat is locked.</div>';
-      lastRenderedMessageKey = nextKey;
-      lastRenderedMessageRoomId = roomId;
-      lastRenderedMessageCount = 0;
-      lastRenderedLastMessageId = "";
+      setLastRenderedMessageState({
+        key: nextKey,
+        roomId,
+        count: 0,
+        lastMessageId: ""
+      });
     }
     forceNextMessageStickToBottom = false;
     return;
@@ -1477,17 +1616,19 @@ const renderMessages = ({ forceScroll = false } = {}) => {
     const nextKey = `empty:${roomId}`;
     if (nextKey !== lastRenderedMessageKey) {
       messageList.innerHTML = '<div class="empty-chat">No messages yet. Say hi.</div>';
-      lastRenderedMessageKey = nextKey;
-      lastRenderedMessageRoomId = roomId;
-      lastRenderedMessageCount = 0;
-      lastRenderedLastMessageId = "";
+      setLastRenderedMessageState({
+        key: nextKey,
+        roomId,
+        count: 0,
+        lastMessageId: ""
+      });
     }
     forceNextMessageStickToBottom = false;
     return;
   }
 
   const lastMessage = messages[messages.length - 1];
-  const nextKey = `filled:${roomId}:${messages.length}:${lastMessage?.id || ""}:${lastMessage?.createdAt || ""}:${lastMessage?.userId || ""}`;
+  const nextKey = buildFilledMessageRenderKey({ roomId, messages });
   const previousMessage = messages[messages.length - 2];
   const roomChanged = lastRenderedMessageRoomId !== roomId;
   const shouldStickToBottom = forceScroll || forceNextMessageStickToBottom || roomChanged || isMessageListNearBottom();
@@ -1506,10 +1647,12 @@ const renderMessages = ({ forceScroll = false } = {}) => {
       messageList.scrollTop = messageList.scrollHeight;
     }
 
-    lastRenderedMessageKey = nextKey;
-    lastRenderedMessageRoomId = roomId;
-    lastRenderedMessageCount = messages.length;
-    lastRenderedLastMessageId = String(lastMessage?.id || "");
+    setLastRenderedMessageState({
+      key: nextKey,
+      roomId,
+      count: messages.length,
+      lastMessageId: lastMessage?.id || ""
+    });
     return;
   }
 
@@ -1524,10 +1667,12 @@ const renderMessages = ({ forceScroll = false } = {}) => {
   }
 
   forceNextMessageStickToBottom = false;
-  lastRenderedMessageKey = nextKey;
-  lastRenderedMessageRoomId = roomId;
-  lastRenderedMessageCount = messages.length;
-  lastRenderedLastMessageId = String(lastMessage?.id || "");
+  setLastRenderedMessageState({
+    key: nextKey,
+    roomId,
+    count: messages.length,
+    lastMessageId: lastMessage?.id || ""
+  });
 };
 
 const renderRoomHeader = () => {
@@ -1592,20 +1737,79 @@ const ensureActiveRoom = () => {
   }
 };
 
-const renderRooms = () => {
+const getRoomPreviewText = room => {
+  if (!room) {
+    return "No messages yet";
+  }
+
+  if (room.accessStatus === "pending") {
+    return "Waiting for owner approval";
+  }
+
+  if (room.latestMessage) {
+    return `${room.latestMessage.username || "Unknown"}: ${room.latestMessage.text}`;
+  }
+
+  return "No messages yet";
+};
+
+const findRoomListItemById = roomId => {
+  const normalizedRoomId = String(roomId || "");
+  if (!normalizedRoomId || !roomList) {
+    return null;
+  }
+
+  const buttons = roomList.querySelectorAll(".room-item[data-room-id]");
+  for (const button of buttons) {
+    if (String(button.getAttribute("data-room-id") || "") === normalizedRoomId) {
+      return button;
+    }
+  }
+
+  return null;
+};
+
+const getRoomListSignature = rooms => {
+  const list = Array.isArray(rooms) ? rooms : [];
+  return list
+    .map(room => {
+      const latest = room?.latestMessage || null;
+      return [
+        String(room?.id || ""),
+        String(room?.updatedAt || ""),
+        String(room?.accessStatus || ""),
+        String(room?.memberCount || 0),
+        String(room?.pendingCount || 0),
+        String(room?.name || ""),
+        String(room?.ownerUserId || ""),
+        room?.isPrivate ? "1" : "0",
+        room?.isDiscoverable === false ? "0" : "1",
+        String(latest?.createdAt || ""),
+        String(latest?.text || "")
+      ].join("|");
+    })
+    .join("~");
+};
+
+const renderRooms = ({ refreshActivePanels = true } = {}) => {
   userChip.textContent = state.user ? `${state.user.displayName} · ${state.user.id}` : "";
 
   if (state.user && document.activeElement !== displayNameInput) {
     displayNameInput.value = state.user.displayName;
   }
 
+  const previousActiveRoomId = state.activeRoomId;
   ensureActiveRoom();
+  const activeRoomChanged = previousActiveRoomId !== state.activeRoomId;
+  const shouldRefreshPanels = refreshActivePanels || activeRoomChanged;
 
   if (state.rooms.length === 0) {
     roomList.innerHTML = '<p class="empty">No rooms yet. Create one.</p>';
-    renderRoomHeader();
-    renderMessages();
-    renderMembers();
+    if (shouldRefreshPanels) {
+      renderRoomHeader();
+      renderMessages();
+      renderMembers();
+    }
     if (!settingsModal.classList.contains("hidden")) {
       renderSettingsRooms();
     }
@@ -1618,11 +1822,7 @@ const renderRooms = () => {
       const active = room.id === state.activeRoomId;
       const pending = room.accessStatus === "pending";
       const roomType = room.isPrivate ? "private" : "public";
-      const preview = pending
-        ? "Waiting for owner approval"
-        : room.latestMessage
-          ? `${room.latestMessage.username || "Unknown"}: ${room.latestMessage.text}`
-          : "No messages yet";
+      const preview = getRoomPreviewText(room);
       const ownerWaitlistHint = room.isOwner && room.pendingCount > 0 ? ` · ${room.pendingCount} waiting` : "";
 
       return `
@@ -1635,13 +1835,45 @@ const renderRooms = () => {
     })
     .join("");
 
-  renderRoomHeader();
-  renderMessages();
-  renderMembers();
+  if (shouldRefreshPanels) {
+    renderRoomHeader();
+    renderMessages();
+    renderMembers();
+  }
   if (!settingsModal.classList.contains("hidden")) {
     renderSettingsRooms();
   }
   syncRoomModalForRoomCount();
+};
+
+const updateRoomPreviewFromMessage = message => {
+  const roomId = String(message?.roomId || "").trim();
+  if (!roomId) {
+    return;
+  }
+
+  const room = state.rooms.find(entry => String(entry.id || "") === roomId);
+  if (!room || String(room.accessStatus || "") !== "member") {
+    return;
+  }
+
+  room.latestMessage = {
+    username: String(message.username || "").trim() || "Unknown",
+    text: String(message.text || ""),
+    createdAt: String(message.createdAt || "") || new Date().toISOString()
+  };
+  room.updatedAt = room.latestMessage.createdAt;
+
+  const button = findRoomListItemById(roomId);
+  if (!button) {
+    renderRooms({ refreshActivePanels: false });
+    return;
+  }
+
+  const previewElement = button.querySelector(".room-item__preview");
+  if (previewElement) {
+    previewElement.textContent = getRoomPreviewText(room);
+  }
 };
 
 const renderDiscoveryRooms = () => {
@@ -2013,6 +2245,7 @@ const processMessageSendQueue = async () => {
       });
 
       if (result?.message) {
+        const optimisticId = String(optimisticMessage?.id || "");
         const replaced = optimisticMessage
           ? replaceMessageInState({
               roomId: nextMessage.roomId,
@@ -2023,9 +2256,24 @@ const processMessageSendQueue = async () => {
         const added = replaced ? false : addMessageToState(result.message);
 
         if ((replaced || added) && String(result.message.roomId) === String(state.activeRoomId)) {
-          renderMessages();
-          messageList.scrollTop = messageList.scrollHeight;
+          if (replaced && optimisticId) {
+            const patched = replaceRenderedMessageTile({
+              roomId: result.message.roomId,
+              targetMessageId: optimisticId,
+              nextMessage: result.message,
+              forceScroll: true
+            });
+            if (!patched) {
+              renderMessages();
+              messageList.scrollTop = messageList.scrollHeight;
+            }
+          } else {
+            renderMessages();
+            messageList.scrollTop = messageList.scrollHeight;
+          }
         }
+
+        updateRoomPreviewFromMessage(result.message);
       }
 
       if (result?.transport === "http") {
@@ -2861,25 +3109,44 @@ socket.on("connect_error", () => {
 });
 
 socket.on("rooms:update", rooms => {
+  const nextRooms = applyStoredRoomOrder(Array.isArray(rooms) ? rooms : []);
+  if (getRoomListSignature(nextRooms) === getRoomListSignature(state.rooms)) {
+    return;
+  }
+
   const previousRooms = state.rooms;
   const previousActive = state.activeRoomId;
   const previousActiveRoom = previousRooms.find(room => room.id === previousActive) || null;
-  state.rooms = applyStoredRoomOrder(Array.isArray(rooms) ? rooms : []);
-  renderRooms();
+  state.rooms = nextRooms;
+  const currentActiveStillExists = state.rooms.some(room => room.id === state.activeRoomId);
+  const nextActiveRoomForComparison = currentActiveStillExists
+    ? state.rooms.find(room => room.id === state.activeRoomId) || null
+    : null;
+  const accessChanged =
+    previousActiveRoom?.accessStatus !== nextActiveRoomForComparison?.accessStatus ||
+    previousActiveRoom?.pendingCount !== nextActiveRoomForComparison?.pendingCount ||
+    previousActiveRoom?.memberCount !== nextActiveRoomForComparison?.memberCount;
+  const activeRoomMetaChanged =
+    previousActiveRoom?.name !== nextActiveRoomForComparison?.name ||
+    previousActiveRoom?.ownerUserId !== nextActiveRoomForComparison?.ownerUserId ||
+    Boolean(previousActiveRoom?.isPrivate) !== Boolean(nextActiveRoomForComparison?.isPrivate) ||
+    Boolean(previousActiveRoom?.isDiscoverable) !== Boolean(nextActiveRoomForComparison?.isDiscoverable);
+  const activeRoomMayChange = Boolean(state.activeRoomId && !currentActiveStillExists);
+  const missingMessageCacheBeforeRender = Boolean(state.activeRoomId && !state.messagesByRoom.has(state.activeRoomId));
+  const shouldRefreshPanels =
+    activeRoomMayChange || accessChanged || activeRoomMetaChanged || missingMessageCacheBeforeRender;
+  renderRooms({ refreshActivePanels: shouldRefreshPanels });
+  const nextActiveRoom = state.rooms.find(room => room.id === state.activeRoomId) || null;
+  const activeRoomChanged = previousActive !== state.activeRoomId;
+  const missingMessageCache = Boolean(state.activeRoomId && !state.messagesByRoom.has(state.activeRoomId));
 
   if (!state.activeRoomId) {
     emitPresenceState();
     return;
   }
 
-  const nextActiveRoom = state.rooms.find(room => room.id === state.activeRoomId) || null;
-  const accessChanged =
-    previousActiveRoom?.accessStatus !== nextActiveRoom?.accessStatus ||
-    previousActiveRoom?.pendingCount !== nextActiveRoom?.pendingCount ||
-    previousActiveRoom?.memberCount !== nextActiveRoom?.memberCount;
-
-  if (previousActive !== state.activeRoomId || !state.messagesByRoom.has(state.activeRoomId) || accessChanged) {
-    const shouldIncludeMessages = previousActive !== state.activeRoomId || !state.messagesByRoom.has(state.activeRoomId);
+  if (activeRoomChanged || missingMessageCache || accessChanged) {
+    const shouldIncludeMessages = activeRoomChanged || missingMessageCache;
     loadActiveRoomSnapshot({
       showErrors: false,
       joinSocket: Boolean(nextActiveRoom && nextActiveRoom.accessStatus === "member"),
@@ -2909,16 +3176,27 @@ socket.on("message:new", message => {
     return;
   }
 
-  if (reconcileOwnOptimisticMessage(message)) {
+  const reconciledOptimisticId = reconcileOwnOptimisticMessage(message);
+  if (reconciledOptimisticId) {
     if (String(message.roomId) === String(state.activeRoomId)) {
-      renderMessages();
-      messageList.scrollTop = messageList.scrollHeight;
+      const patched = replaceRenderedMessageTile({
+        roomId: message.roomId,
+        targetMessageId: reconciledOptimisticId,
+        nextMessage: message,
+        forceScroll: true
+      });
+      if (!patched) {
+        renderMessages();
+        messageList.scrollTop = messageList.scrollHeight;
+      }
     }
+    updateRoomPreviewFromMessage(message);
     return;
   }
 
   const added = addMessageToState(message);
   if (!added) {
+    updateRoomPreviewFromMessage(message);
     return;
   }
 
@@ -2929,6 +3207,8 @@ socket.on("message:new", message => {
     }
     updateComposerPlaceholder();
   }
+
+  updateRoomPreviewFromMessage(message);
 });
 
 socket.on("typing:update", payload => {
