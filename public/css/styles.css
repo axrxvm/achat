@@ -93,6 +93,36 @@ label {
   margin-bottom: 24px;
 }
 
+.auth-divider {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  color: rgba(222, 229, 241, 0.64);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 2px 0 14px;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.auth-hash-form {
+  gap: 8px;
+}
+
+.auth-hash-form label {
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 12px;
+}
+
 .auth-footer {
   position: static;
   display: inline-flex;
@@ -1039,6 +1069,26 @@ textarea:focus-visible {
 .settings-note {
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.settings-account-hash-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.account-hash-display {
+  margin: 0;
+  border: 1px dashed rgba(83, 201, 171, 0.42);
+  background: rgba(20, 34, 31, 0.6);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #dcf4ed;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+  white-space: pre-wrap;
+  user-select: all;
 }
 
 .settings-room-list {

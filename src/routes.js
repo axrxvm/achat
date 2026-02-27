@@ -51,6 +51,27 @@ const registerRoutes = ({
     }
   });
 
+  app.post("/auth/account-hash/login", async (req, res) => {
+    const accountHash = String(req.body?.accountHash || "").trim();
+    if (!accountHash) {
+      return res.status(400).json({ error: "Account hash is required" });
+    }
+
+    try {
+      const user = await store.authenticateUserByAccountHash(accountHash);
+      if (!user) {
+        return res.status(401).json({ error: "Invalid account hash" });
+      }
+
+      const session = await store.createSession(user.id);
+      setSessionCookie(res, session.id);
+      res.json({ ok: true, user });
+    } catch (error) {
+      console.error("[ERROR] Account hash login failed", error);
+      res.status(400).json({ error: error.message || "Unable to login with account hash" });
+    }
+  });
+
   app.get("/auth/callback", async (req, res) => {
     const token = req.query.sso_token;
     if (!token) {
@@ -80,6 +101,15 @@ const registerRoutes = ({
       user: req.user,
       rooms: realtime.getRoomsPayloadForUser(req.user.id)
     });
+  });
+
+  app.post("/api/me/account-hash", requireAuth, async (req, res) => {
+    try {
+      const result = await store.generateAccountHashForUser({ userId: req.user.id });
+      res.status(201).json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to generate account hash" });
+    }
   });
 
   app.patch("/api/me", requireAuth, async (req, res) => {

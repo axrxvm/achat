@@ -11,6 +11,132 @@ const MESSAGE_ID_REGEX = /^\d{10}$/;
 const DEFAULT_MAIN_DB_NAME = "achat_main";
 const DEFAULT_MESSAGE_DB_NAME = "achat_messages";
 const DELETED_USER_OAUTH_KEY = "system:deleted-user";
+const ACCOUNT_HASH_WORDS = [
+  "amber",
+  "anchor",
+  "apple",
+  "arcade",
+  "aspen",
+  "atlas",
+  "autumn",
+  "bamboo",
+  "beacon",
+  "berry",
+  "blossom",
+  "breeze",
+  "brook",
+  "cactus",
+  "canyon",
+  "cedar",
+  "cinder",
+  "citrus",
+  "clover",
+  "comet",
+  "copper",
+  "coral",
+  "cosmos",
+  "crimson",
+  "crystal",
+  "daisy",
+  "dawn",
+  "delta",
+  "ember",
+  "fable",
+  "falcon",
+  "fern",
+  "fjord",
+  "forest",
+  "galaxy",
+  "garden",
+  "ginger",
+  "glacier",
+  "golden",
+  "granite",
+  "harbor",
+  "hazel",
+  "honey",
+  "indigo",
+  "island",
+  "ivory",
+  "jasmine",
+  "jungle",
+  "lagoon",
+  "lantern",
+  "lavender",
+  "lemon",
+  "lilac",
+  "lotus",
+  "lumen",
+  "maple",
+  "marble",
+  "meadow",
+  "meteor",
+  "midnight",
+  "mist",
+  "monsoon",
+  "moss",
+  "nectar",
+  "nova",
+  "oak",
+  "oasis",
+  "olive",
+  "onyx",
+  "opal",
+  "orchid",
+  "otter",
+  "pebble",
+  "pepper",
+  "phoenix",
+  "pine",
+  "pluto",
+  "prairie",
+  "puzzle",
+  "quartz",
+  "quill",
+  "rainbow",
+  "raven",
+  "reef",
+  "ripple",
+  "river",
+  "rocket",
+  "saffron",
+  "sakura",
+  "sand",
+  "sapphire",
+  "scarlet",
+  "shadow",
+  "silver",
+  "sky",
+  "solstice",
+  "sparrow",
+  "spring",
+  "spruce",
+  "star",
+  "storm",
+  "summer",
+  "sunset",
+  "tango",
+  "thunder",
+  "timber",
+  "topaz",
+  "trident",
+  "tulip",
+  "twilight",
+  "velvet",
+  "violet",
+  "voyage",
+  "water",
+  "whisper",
+  "willow",
+  "winter",
+  "zephyr"
+];
+const ACCOUNT_HASH_WORD_REGEX = /^[a-z]+$/;
+const ACCOUNT_HASH_FIRST_SEGMENT_REGEX = /^[a-z]+(?:\d{1,2})?$/;
+const ACCOUNT_HASH_NUMBER_REGEX = /^\d{3,6}$/;
+const ACCOUNT_HASH_DIGEST_REGEX = /^[a-f0-9]{64}$/;
+const LEGACY_ACCOUNT_HASH_WORD_COUNT_MIN = 9;
+const LEGACY_ACCOUNT_HASH_WORD_COUNT_MAX = 10;
 
 const EMPTY_STORE = {
   users: [],
@@ -62,6 +188,70 @@ const generateUniqueNumericId = (digits, existingValues) => {
   throw new Error(`Unable to generate unique ${digits}-digit id`);
 };
 
+const getLegacyAccountHashTokens = value => String(value || "").toLowerCase().match(/[a-z0-9]+/g) || [];
+
+const isValidLegacyAccountHashTokens = tokens => {
+  const list = Array.isArray(tokens) ? tokens : [];
+  if (list.length < LEGACY_ACCOUNT_HASH_WORD_COUNT_MIN + 1 || list.length > LEGACY_ACCOUNT_HASH_WORD_COUNT_MAX + 1) {
+    return false;
+  }
+
+  const numberToken = list[list.length - 1] || "";
+  if (!ACCOUNT_HASH_NUMBER_REGEX.test(numberToken)) {
+    return false;
+  }
+
+  const wordTokens = list.slice(0, -1);
+  return wordTokens.every(token => ACCOUNT_HASH_WORD_REGEX.test(token));
+};
+
+const normalizeAccountHash = value => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) {
+    return "";
+  }
+
+  const compact = raw.replace(/\s*-\s*/g, "-").replace(/\s+/g, "");
+  const hyphenSegments = compact.split("-");
+  if (hyphenSegments.length === 5) {
+    const [segmentOne, segmentTwo, segmentThree, segmentFour, segmentFive] = hyphenSegments;
+    const isValidHyphenated =
+      ACCOUNT_HASH_FIRST_SEGMENT_REGEX.test(segmentOne || "") &&
+      ACCOUNT_HASH_WORD_REGEX.test(segmentTwo || "") &&
+      ACCOUNT_HASH_WORD_REGEX.test(segmentThree || "") &&
+      ACCOUNT_HASH_WORD_REGEX.test(segmentFour || "") &&
+      ACCOUNT_HASH_NUMBER_REGEX.test(segmentFive || "");
+    if (isValidHyphenated) {
+      return `${segmentOne}-${segmentTwo}-${segmentThree}-${segmentFour}-${segmentFive}`;
+    }
+  }
+
+  const legacyTokens = getLegacyAccountHashTokens(raw);
+  if (!isValidLegacyAccountHashTokens(legacyTokens)) {
+    return "";
+  }
+
+  return legacyTokens.join(" ");
+};
+
+const hashNormalizedAccountHash = normalizedValue => {
+  return crypto
+    .createHash("sha256")
+    .update(String(normalizedValue || ""))
+    .digest("hex");
+};
+
+const createAccountHashCandidate = () => {
+  const pickWord = () => ACCOUNT_HASH_WORDS[crypto.randomInt(0, ACCOUNT_HASH_WORDS.length)];
+  const firstWordSuffix = crypto.randomInt(0, 2) === 1 ? String(crypto.randomInt(1, 100)) : "";
+  const segmentOne = `${pickWord()}${firstWordSuffix}`;
+  const segmentTwo = pickWord();
+  const segmentThree = pickWord();
+  const segmentFour = pickWord();
+  const segmentFive = String(crypto.randomInt(1000, 10000));
+  return `${segmentOne}-${segmentTwo}-${segmentThree}-${segmentFour}-${segmentFive}`;
+};
+
 const normalizeStore = value => {
   const next = {
     users: Array.isArray(value?.users) ? value.users : [],
@@ -106,6 +296,13 @@ const normalizeStore = value => {
     user.oauthProviderId = String(user.oauthProviderId || "");
     user.oauthEmail = user.oauthEmail ? String(user.oauthEmail).trim().toLowerCase() : null;
     user.avatarUrl = user.avatarUrl || null;
+    user.accountHashDigest = String(user.accountHashDigest || "")
+      .trim()
+      .toLowerCase();
+    if (!ACCOUNT_HASH_DIGEST_REGEX.test(user.accountHashDigest)) {
+      user.accountHashDigest = "";
+    }
+    user.accountHashUpdatedAt = user.accountHashUpdatedAt ? String(user.accountHashUpdatedAt) : null;
     user.createdAt = user.createdAt || nowIso();
     user.lastLoginAt = user.lastLoginAt || user.createdAt;
   }
@@ -204,6 +401,7 @@ const ensureMongoConnections = async () => {
 
   await Promise.all([
     mongoCollections.users.createIndex({ oauthKey: 1 }),
+    mongoCollections.users.createIndex({ accountHashDigest: 1 }),
     mongoCollections.rooms.createIndex({ ownerUserId: 1 }),
     mongoCollections.sessions.createIndex({ userId: 1 }),
     mongoCollections.messages.createIndex({ roomId: 1, createdAt: 1 }),
@@ -412,6 +610,8 @@ const ensureDeletedUser = () => {
     displayName: "Deleted User",
     displayNameCustom: false,
     avatarUrl: null,
+    accountHashDigest: "",
+    accountHashUpdatedAt: null,
     createdAt: nowIso(),
     lastLoginAt: nowIso()
   };
@@ -508,6 +708,8 @@ const upsertOAuthUser = async profile => {
       displayName,
       displayNameCustom: false,
       avatarUrl,
+      accountHashDigest: "",
+      accountHashUpdatedAt: null,
       createdAt: nowIso(),
       lastLoginAt: nowIso()
     };
@@ -531,11 +733,69 @@ const upsertOAuthUser = async profile => {
     }
 
     user.avatarUrl = avatarUrl || user.avatarUrl || null;
+    user.accountHashDigest = String(user.accountHashDigest || "")
+      .trim()
+      .toLowerCase();
+    if (!ACCOUNT_HASH_DIGEST_REGEX.test(user.accountHashDigest)) {
+      user.accountHashDigest = "";
+    }
+    user.accountHashUpdatedAt = user.accountHashUpdatedAt ? String(user.accountHashUpdatedAt) : null;
     user.lastLoginAt = nowIso();
   }
 
   await persistUser(user);
   return clone(user);
+};
+
+const generateAccountHashForUser = async ({ userId }) => {
+  const user = findUserById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  const existingDigests = new Set(state.users.map(entry => String(entry.accountHashDigest || "")).filter(Boolean));
+  existingDigests.delete(String(user.accountHashDigest || ""));
+
+  for (let attempt = 0; attempt < 10000; attempt += 1) {
+    const accountHash = createAccountHashCandidate();
+    const normalized = normalizeAccountHash(accountHash);
+    if (!normalized) {
+      continue;
+    }
+
+    const digest = hashNormalizedAccountHash(normalized);
+    if (existingDigests.has(digest)) {
+      continue;
+    }
+
+    user.accountHashDigest = digest;
+    user.accountHashUpdatedAt = nowIso();
+    await persistUser(user);
+
+    return {
+      accountHash,
+      user: getUserById(user.id)
+    };
+  }
+
+  throw new Error("Unable to generate a unique account hash");
+};
+
+const authenticateUserByAccountHash = async accountHash => {
+  const normalized = normalizeAccountHash(accountHash);
+  if (!normalized) {
+    return null;
+  }
+
+  const digest = hashNormalizedAccountHash(normalized);
+  const user = state.users.find(entry => String(entry.accountHashDigest || "") === digest);
+  if (!user) {
+    return null;
+  }
+
+  user.lastLoginAt = nowIso();
+  await persistUser(user);
+  return getUserById(user.id);
 };
 
 const createSession = async userId => {
@@ -1182,6 +1442,8 @@ const getUserById = userId => {
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
     oauthProvider: user.oauthProvider,
+    hasAccountHash: Boolean(user.accountHashDigest),
+    accountHashUpdatedAt: user.accountHashUpdatedAt || null,
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt
   };
@@ -1223,6 +1485,7 @@ const getRoomById = roomId => {
 
 module.exports = {
   addMessage,
+  authenticateUserByAccountHash,
   approvePendingUser,
   createRoom,
   createSession,
@@ -1231,6 +1494,7 @@ module.exports = {
   deleteSession,
   deleteUserAccount,
   ensureStore,
+  generateAccountHashForUser,
   getMessagesPageForRoom,
   getMessagesForRoom,
   getRoomAccessForUser,

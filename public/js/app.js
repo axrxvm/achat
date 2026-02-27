@@ -26,6 +26,9 @@ const ROOM_ORDER_COOKIE_TTL_SECONDS = 60 * 60 * 24 * 365;
 const authView = document.getElementById("auth-view");
 const appView = document.getElementById("app-view");
 const oauthButton = document.getElementById("oauth-login");
+const accountHashLoginForm = document.getElementById("account-hash-login-form");
+const accountHashLoginInput = document.getElementById("account-hash-login-input");
+const accountHashLoginButton = document.getElementById("account-hash-login-button");
 const logoutButton = document.getElementById("logout");
 
 const roomPanel = document.getElementById("room-panel");
@@ -66,6 +69,10 @@ const displayNameInput = document.getElementById("display-name-input");
 const openSettingsButton = document.getElementById("open-settings");
 const deleteAccountButton = document.getElementById("delete-account");
 const settingsRoomList = document.getElementById("settings-room-list");
+const accountHashStatus = document.getElementById("account-hash-status");
+const generateAccountHashButton = document.getElementById("generate-account-hash");
+const copyAccountHashButton = document.getElementById("copy-account-hash");
+const accountHashDisplay = document.getElementById("account-hash-display");
 
 const createRoomForm = document.getElementById("create-room-form");
 const joinRoomForm = document.getElementById("join-room-form");
@@ -109,6 +116,7 @@ let chatActionsMenuOpen = false;
 let composerAttachments = [];
 let localTypingRoomId = null;
 let localTypingLastSentAt = 0;
+let generatedAccountHashValue = "";
 
 const MAX_COMPOSER_ATTACHMENTS = 4;
 const MAX_COMPOSER_ATTACHMENT_BYTES = 12 * 1024 * 1024;
@@ -1311,6 +1319,52 @@ const toggleChatActionsMenu = () => {
   chatActionsToggleButton.setAttribute("aria-expanded", "true");
 };
 
+const setGeneratedAccountHash = value => {
+  generatedAccountHashValue = String(value || "").trim();
+  accountHashDisplay.textContent = generatedAccountHashValue;
+  accountHashDisplay.classList.toggle("hidden", !generatedAccountHashValue);
+  copyAccountHashButton.classList.toggle("hidden", !generatedAccountHashValue);
+  copyAccountHashButton.disabled = !generatedAccountHashValue;
+};
+
+const renderAccountHashSettings = () => {
+  const hasAccountHash = Boolean(state.user?.hasAccountHash);
+  generateAccountHashButton.textContent = hasAccountHash ? "Regenerate Account Hash" : "Generate Account Hash";
+  generateAccountHashButton.disabled = !state.user;
+
+  if (!state.user) {
+    accountHashStatus.textContent = "Login required.";
+    return;
+  }
+
+  accountHashStatus.textContent = hasAccountHash
+    ? "Hash login is active. Format: word(optionalNumber)-word-word-word-number. Regenerating replaces your current hash."
+    : "Generate an account hash with format word(optionalNumber)-word-word-word-number, and keep it private.";
+};
+
+const copyText = async value => {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return false;
+  }
+
+  if (navigator?.clipboard?.writeText) {
+    await navigator.clipboard.writeText(normalized);
+    return true;
+  }
+
+  const temp = document.createElement("textarea");
+  temp.value = normalized;
+  temp.setAttribute("readonly", "true");
+  temp.style.position = "fixed";
+  temp.style.left = "-9999px";
+  document.body.appendChild(temp);
+  temp.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(temp);
+  return copied;
+};
+
 const renderSettingsRooms = () => {
   if (!settingsRoomList) {
     return;
@@ -1355,6 +1409,7 @@ const openSettingsModal = () => {
   settingsModal.classList.remove("hidden");
   settingsModal.setAttribute("aria-hidden", "false");
   renderSettingsRooms();
+  renderAccountHashSettings();
 
   if (state.user) {
     displayNameInput.value = state.user.displayName;
@@ -1812,6 +1867,7 @@ const renderRooms = ({ refreshActivePanels = true } = {}) => {
     }
     if (!settingsModal.classList.contains("hidden")) {
       renderSettingsRooms();
+      renderAccountHashSettings();
     }
     syncRoomModalForRoomCount();
     return;
@@ -1842,6 +1898,7 @@ const renderRooms = ({ refreshActivePanels = true } = {}) => {
   }
   if (!settingsModal.classList.contains("hidden")) {
     renderSettingsRooms();
+    renderAccountHashSettings();
   }
   syncRoomModalForRoomCount();
 };
@@ -2330,6 +2387,8 @@ const bootAuthenticated = async () => {
   const data = await request("/api/me");
   state.user = data.user;
   state.rooms = applyStoredRoomOrder(data.rooms || []);
+  setGeneratedAccountHash("");
+  renderAccountHashSettings();
 
   authView.classList.add("hidden");
   appView.classList.remove("hidden");
@@ -2348,6 +2407,32 @@ oauthButton.addEventListener("click", () => {
   window.location.href = "/auth/login";
 });
 
+accountHashLoginForm.addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const accountHash = String(accountHashLoginInput.value || "").trim();
+  if (!accountHash) {
+    notify("Account hash is required");
+    return;
+  }
+
+  accountHashLoginButton.disabled = true;
+  try {
+    await request("/auth/account-hash/login", {
+      method: "POST",
+      body: JSON.stringify({ accountHash })
+    });
+
+    accountHashLoginForm.reset();
+    await bootAuthenticated();
+    notify("Logged in with account hash");
+  } catch (error) {
+    notify(error.message || "Unable to login with account hash");
+  } finally {
+    accountHashLoginButton.disabled = false;
+  }
+});
+
 logoutButton.addEventListener("click", async () => {
   try {
     stopLocalTyping({ emit: true });
@@ -2356,6 +2441,40 @@ logoutButton.addEventListener("click", async () => {
     window.location.href = "/";
   } catch (error) {
     notify(error.message);
+  }
+});
+
+generateAccountHashButton.addEventListener("click", async () => {
+  if (!state.user) {
+    notify("You must be logged in");
+    return;
+  }
+
+  generateAccountHashButton.disabled = true;
+  try {
+    const result = await request("/api/me/account-hash", { method: "POST" });
+    state.user = result.user;
+    setGeneratedAccountHash(result.accountHash || "");
+    renderAccountHashSettings();
+    notify("Account hash generated. Save it now.");
+  } catch (error) {
+    notify(error.message || "Unable to generate account hash");
+  } finally {
+    generateAccountHashButton.disabled = false;
+  }
+});
+
+copyAccountHashButton.addEventListener("click", async () => {
+  try {
+    const copied = await copyText(generatedAccountHashValue);
+    if (!copied) {
+      notify("No account hash to copy");
+      return;
+    }
+
+    notify("Account hash copied");
+  } catch (error) {
+    notify("Clipboard copy failed");
   }
 });
 

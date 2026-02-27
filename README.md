@@ -5,6 +5,7 @@ A minimal Discord-like real-time chat app built with Bun, Express, and Socket.IO
 ## Features
 
 - OAuth login flow using ALabs OAuth Worker API
+- Optional account-hash login (generated as `word(optionalNumber)-word-word-word-number`)
 - MongoDB Atlas persistence with split clusters: main data and messages
 - 7-digit user IDs and 4-digit room IDs
 - Room ownership, creation, join/leave, and multi-room membership

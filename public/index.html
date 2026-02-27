@@ -20,6 +20,21 @@
         <h1>Your Rooms, Live</h1>
         <p>Connect, collaborate, in real-time</p>
         <button id="oauth-login" class="primary-button">Continue with OAuth</button>
+        <div class="auth-divider" role="presentation">or</div>
+        <form id="account-hash-login-form" class="stack-form auth-hash-form" autocomplete="off">
+          <label for="account-hash-login-input">Login with Account Hash</label>
+          <input
+            id="account-hash-login-input"
+            name="accountHash"
+            placeholder="sky7-cedar-river-lotus-4821"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            required
+          />
+          <button id="account-hash-login-button" type="submit" class="secondary-button">Login with Account Hash</button>
+        </form>
       </div>
       <footer class="auth-footer">
         <span>Made by Aarav Mehta</span>
@@ -222,6 +237,18 @@
             <h3>Manage Rooms</h3>
             <p class="settings-note">Leave rooms you joined or delete rooms you own.</p>
             <div id="settings-room-list" class="settings-room-list"></div>
+          </section>
+
+          <section class="settings-card">
+            <h3>Account Hash Login</h3>
+            <p id="account-hash-status" class="settings-note">
+              Format: word(optionalNumber)-word-word-word-number. Keep it private and stored safely.
+            </p>
+            <div class="settings-account-hash-actions">
+              <button id="generate-account-hash" type="button" class="secondary-button">Generate Account Hash</button>
+              <button id="copy-account-hash" type="button" class="secondary-button hidden" disabled>Copy</button>
+            </div>
+            <pre id="account-hash-display" class="account-hash-display hidden"></pre>
           </section>
 
           <section class="settings-card danger">
