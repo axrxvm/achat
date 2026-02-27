@@ -137,6 +137,9 @@ const ACCOUNT_HASH_NUMBER_REGEX = /^\d{3,6}$/;
 const ACCOUNT_HASH_DIGEST_REGEX = /^[a-f0-9]{64}$/;
 const LEGACY_ACCOUNT_HASH_WORD_COUNT_MIN = 9;
 const LEGACY_ACCOUNT_HASH_WORD_COUNT_MAX = 10;
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 128;
+const PASSWORD_HASH_REGEX = /^[a-f0-9]{32}:[a-f0-9]{128}$/;
 
 const EMPTY_STORE = {
   users: [],
@@ -170,6 +173,8 @@ const sanitizeRoomName = value => {
     .slice(0, 48);
   return cleaned;
 };
+
+const normalizeEmail = value => String(value || "").trim().toLowerCase();
 
 const randomFixedDigits = digits => {
   const min = 10 ** (digits - 1);
@@ -241,6 +246,65 @@ const hashNormalizedAccountHash = normalizedValue => {
     .digest("hex");
 };
 
+const isPasswordLengthValid = value => {
+  const password = String(value || "");
+  return password.length >= PASSWORD_MIN_LENGTH && password.length <= PASSWORD_MAX_LENGTH;
+};
+
+const hashPassword = password => {
+  const normalizedPassword = String(password || "");
+  const saltHex = crypto.randomBytes(16).toString("hex");
+  const derivedHex = crypto.scryptSync(normalizedPassword, saltHex, 64).toString("hex");
+  return `${saltHex}:${derivedHex}`;
+};
+
+const verifyPasswordHash = ({ password, passwordHash }) => {
+  const normalizedHash = String(passwordHash || "").trim().toLowerCase();
+  if (!PASSWORD_HASH_REGEX.test(normalizedHash)) {
+    return false;
+  }
+
+  const [saltHex, expectedDerivedHex] = normalizedHash.split(":");
+  if (!saltHex || !expectedDerivedHex) {
+    return false;
+  }
+
+  let actualDerivedHex = "";
+  try {
+    actualDerivedHex = crypto.scryptSync(String(password || ""), saltHex, 64).toString("hex");
+  } catch (error) {
+    return false;
+  }
+
+  if (actualDerivedHex.length !== expectedDerivedHex.length) {
+    return false;
+  }
+
+  const actualBuffer = Buffer.from(actualDerivedHex, "hex");
+  const expectedBuffer = Buffer.from(expectedDerivedHex, "hex");
+  return crypto.timingSafeEqual(actualBuffer, expectedBuffer);
+};
+
+const normalizeUserPasswordFields = user => {
+  user.passwordHash = String(user.passwordHash || "")
+    .trim()
+    .toLowerCase();
+  if (!PASSWORD_HASH_REGEX.test(user.passwordHash)) {
+    user.passwordHash = "";
+  }
+
+  user.passwordLoginEmail = normalizeEmail(user.passwordLoginEmail || "");
+  if (user.passwordHash && !user.passwordLoginEmail && user.oauthEmail) {
+    user.passwordLoginEmail = normalizeEmail(user.oauthEmail);
+  }
+
+  if (!user.passwordHash) {
+    user.passwordLoginEmail = "";
+  }
+
+  user.passwordUpdatedAt = user.passwordUpdatedAt ? String(user.passwordUpdatedAt) : null;
+};
+
 const createAccountHashCandidate = () => {
   const pickWord = () => ACCOUNT_HASH_WORDS[crypto.randomInt(0, ACCOUNT_HASH_WORDS.length)];
   const firstWordSuffix = crypto.randomInt(0, 2) === 1 ? String(crypto.randomInt(1, 100)) : "";
@@ -294,8 +358,9 @@ const normalizeStore = value => {
       .trim()
       .toLowerCase();
     user.oauthProviderId = String(user.oauthProviderId || "");
-    user.oauthEmail = user.oauthEmail ? String(user.oauthEmail).trim().toLowerCase() : null;
+    user.oauthEmail = user.oauthEmail ? normalizeEmail(user.oauthEmail) : null;
     user.avatarUrl = user.avatarUrl || null;
+    normalizeUserPasswordFields(user);
     user.accountHashDigest = String(user.accountHashDigest || "")
       .trim()
       .toLowerCase();
@@ -402,6 +467,7 @@ const ensureMongoConnections = async () => {
   await Promise.all([
     mongoCollections.users.createIndex({ oauthKey: 1 }),
     mongoCollections.users.createIndex({ accountHashDigest: 1 }),
+    mongoCollections.users.createIndex({ passwordLoginEmail: 1 }),
     mongoCollections.rooms.createIndex({ ownerUserId: 1 }),
     mongoCollections.sessions.createIndex({ userId: 1 }),
     mongoCollections.messages.createIndex({ roomId: 1, createdAt: 1 }),
@@ -610,6 +676,9 @@ const ensureDeletedUser = () => {
     displayName: "Deleted User",
     displayNameCustom: false,
     avatarUrl: null,
+    passwordHash: "",
+    passwordLoginEmail: "",
+    passwordUpdatedAt: null,
     accountHashDigest: "",
     accountHashUpdatedAt: null,
     createdAt: nowIso(),
@@ -641,7 +710,7 @@ const upsertOAuthUser = async profile => {
     profile?.provider_id || profile?.providerId || profile?.provider_user_id || profile?.providerUserId || ""
   ).trim();
   const workerSub = String(profile?.sub || profile?.user_id || profile?.id || profile?.uid || "").trim();
-  const oauthEmail = profile?.email ? String(profile.email).trim().toLowerCase() : null;
+  const oauthEmail = profile?.email ? normalizeEmail(profile.email) : null;
   const displayName = sanitizeDisplayName(profile?.username || profile?.name || profile?.email || "");
   const avatarUrl = profile?.avatar || profile?.picture || profile?.avatar_url || null;
 
@@ -708,6 +777,9 @@ const upsertOAuthUser = async profile => {
       displayName,
       displayNameCustom: false,
       avatarUrl,
+      passwordHash: "",
+      passwordLoginEmail: "",
+      passwordUpdatedAt: null,
       accountHashDigest: "",
       accountHashUpdatedAt: null,
       createdAt: nowIso(),
@@ -733,6 +805,7 @@ const upsertOAuthUser = async profile => {
     }
 
     user.avatarUrl = avatarUrl || user.avatarUrl || null;
+    normalizeUserPasswordFields(user);
     user.accountHashDigest = String(user.accountHashDigest || "")
       .trim()
       .toLowerCase();
@@ -745,6 +818,115 @@ const upsertOAuthUser = async profile => {
 
   await persistUser(user);
   return clone(user);
+};
+
+const setUserPasswordLogin = async ({ userId, password, currentPassword = "" }) => {
+  const user = findUserById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  const normalizedPassword = String(password || "");
+  if (!isPasswordLengthValid(normalizedPassword)) {
+    throw new Error(`Password must be ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} characters`);
+  }
+
+  const loginEmail = normalizeEmail(user.oauthEmail || "");
+  if (!loginEmail) {
+    throw new Error("No OAuth email found on this account. Password login cannot be enabled.");
+  }
+
+  const conflictingUser = state.users.find(entry => {
+    return (
+      String(entry.id) !== String(user.id) &&
+      Boolean(String(entry.passwordHash || "")) &&
+      normalizeEmail(entry.passwordLoginEmail || "") === loginEmail
+    );
+  });
+  if (conflictingUser) {
+    throw new Error("This email is already linked to another password-login account");
+  }
+
+  if (user.passwordHash) {
+    const hasCurrentPassword = String(currentPassword || "").length > 0;
+    if (!hasCurrentPassword) {
+      throw new Error("Current password is required");
+    }
+
+    const isCurrentPasswordValid = verifyPasswordHash({
+      password: currentPassword,
+      passwordHash: user.passwordHash
+    });
+    if (!isCurrentPasswordValid) {
+      throw new Error("Current password is incorrect");
+    }
+  }
+
+  user.passwordHash = hashPassword(normalizedPassword);
+  user.passwordLoginEmail = loginEmail;
+  user.passwordUpdatedAt = nowIso();
+  await persistUser(user);
+  return getUserById(user.id);
+};
+
+const disableUserPasswordLogin = async ({ userId, currentPassword = "" }) => {
+  const user = findUserById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  if (!user.passwordHash) {
+    throw new Error("Password login is not enabled");
+  }
+
+  const hasCurrentPassword = String(currentPassword || "").length > 0;
+  if (!hasCurrentPassword) {
+    throw new Error("Current password is required");
+  }
+
+  const isCurrentPasswordValid = verifyPasswordHash({
+    password: currentPassword,
+    passwordHash: user.passwordHash
+  });
+  if (!isCurrentPasswordValid) {
+    throw new Error("Current password is incorrect");
+  }
+
+  user.passwordHash = "";
+  user.passwordLoginEmail = "";
+  user.passwordUpdatedAt = null;
+  await persistUser(user);
+  return getUserById(user.id);
+};
+
+const authenticateUserByPassword = async ({ email, password }) => {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPassword = String(password || "");
+  if (!normalizedEmail || !normalizedPassword) {
+    return null;
+  }
+
+  const user = state.users.find(entry => {
+    return (
+      Boolean(String(entry.passwordHash || "")) &&
+      normalizeEmail(entry.passwordLoginEmail || "") === normalizedEmail
+    );
+  });
+  if (!user) {
+    return null;
+  }
+
+  const isValid = verifyPasswordHash({
+    password: normalizedPassword,
+    passwordHash: user.passwordHash
+  });
+  if (!isValid) {
+    return null;
+  }
+
+  user.lastLoginAt = nowIso();
+  await persistUser(user);
+  return getUserById(user.id);
 };
 
 const generateAccountHashForUser = async ({ userId }) => {
@@ -794,6 +976,18 @@ const authenticateUserByAccountHash = async accountHash => {
   }
 
   user.lastLoginAt = nowIso();
+  await persistUser(user);
+  return getUserById(user.id);
+};
+
+const disableUserAccountHashLogin = async ({ userId }) => {
+  const user = findUserById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  user.accountHashDigest = "";
+  user.accountHashUpdatedAt = null;
   await persistUser(user);
   return getUserById(user.id);
 };
@@ -1442,6 +1636,10 @@ const getUserById = userId => {
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
     oauthProvider: user.oauthProvider,
+    email: user.oauthEmail || null,
+    hasPasswordLogin: Boolean(user.passwordHash),
+    passwordLoginEmail: user.passwordLoginEmail || null,
+    passwordUpdatedAt: user.passwordUpdatedAt || null,
     hasAccountHash: Boolean(user.accountHashDigest),
     accountHashUpdatedAt: user.accountHashUpdatedAt || null,
     createdAt: user.createdAt,
@@ -1486,12 +1684,15 @@ const getRoomById = roomId => {
 module.exports = {
   addMessage,
   authenticateUserByAccountHash,
+  authenticateUserByPassword,
   approvePendingUser,
   createRoom,
   createSession,
   deleteMessage,
   deleteRoom,
   deleteSession,
+  disableUserAccountHashLogin,
+  disableUserPasswordLogin,
   deleteUserAccount,
   ensureStore,
   generateAccountHashForUser,
@@ -1512,6 +1713,7 @@ module.exports = {
   transferRoomOwnership,
   setRoomDiscoverability,
   setRoomPrivacy,
+  setUserPasswordLogin,
   touchSession,
   updateUserDisplayName,
   upsertOAuthUser

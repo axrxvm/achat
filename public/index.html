@@ -35,6 +35,30 @@
           />
           <button id="account-hash-login-button" type="submit" class="secondary-button">Login with Account Hash</button>
         </form>
+        <div class="auth-divider" role="presentation">or</div>
+        <form id="password-login-form" class="stack-form auth-password-form" autocomplete="off">
+          <label for="password-login-email-input">Login with Email & Password</label>
+          <input
+            id="password-login-email-input"
+            name="email"
+            type="email"
+            placeholder="you@example.com"
+            autocomplete="email"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            required
+          />
+          <input
+            id="password-login-password-input"
+            name="password"
+            type="password"
+            placeholder="Password"
+            autocomplete="current-password"
+            required
+          />
+          <button id="password-login-button" type="submit" class="secondary-button">Login with Password</button>
+        </form>
       </div>
       <footer class="auth-footer">
         <span>Made by Aarav Mehta</span>
@@ -247,8 +271,42 @@
             <div class="settings-account-hash-actions">
               <button id="generate-account-hash" type="button" class="secondary-button">Generate Account Hash</button>
               <button id="copy-account-hash" type="button" class="secondary-button hidden" disabled>Copy</button>
+              <button id="disable-account-hash" type="button" class="secondary-button hidden">Disable Account Hash</button>
             </div>
             <pre id="account-hash-display" class="account-hash-display hidden"></pre>
+          </section>
+
+          <section class="settings-card">
+            <h3>Email & Password Login</h3>
+            <p id="password-login-status" class="settings-note">
+              Enable login with email + password. Passwords are stored as secure hashes.
+            </p>
+            <p id="password-login-email" class="settings-note"></p>
+            <form id="settings-password-form" class="stack-form settings-password-form" autocomplete="off">
+              <label for="settings-current-password-input">Current Password</label>
+              <input
+                id="settings-current-password-input"
+                name="currentPassword"
+                type="password"
+                placeholder="Required to update/disable"
+                autocomplete="current-password"
+              />
+              <label for="settings-password-input">New Password</label>
+              <div class="inline-field">
+                <input
+                  id="settings-password-input"
+                  name="password"
+                  type="password"
+                  placeholder="At least 8 characters"
+                  autocomplete="new-password"
+                  minlength="8"
+                  maxlength="128"
+                  required
+                />
+                <button id="settings-password-submit" type="submit" class="secondary-button">Enable</button>
+              </div>
+            </form>
+            <button id="disable-password-login" type="button" class="secondary-button hidden">Disable Password Login</button>
           </section>
 
           <section class="settings-card danger">

@@ -72,6 +72,28 @@ const registerRoutes = ({
     }
   });
 
+  app.post("/auth/password/login", async (req, res) => {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
+
+    try {
+      const user = await store.authenticateUserByPassword({ email, password });
+      if (!user) {
+        return res.status(401).json({ error: "Invalid email or password" });
+      }
+
+      const session = await store.createSession(user.id);
+      setSessionCookie(res, session.id);
+      res.json({ ok: true, user });
+    } catch (error) {
+      console.error("[ERROR] Password login failed", error);
+      res.status(400).json({ error: error.message || "Unable to login with email and password" });
+    }
+  });
+
   app.get("/auth/callback", async (req, res) => {
     const token = req.query.sso_token;
     if (!token) {
@@ -109,6 +131,44 @@ const registerRoutes = ({
       res.status(201).json(result);
     } catch (error) {
       res.status(400).json({ error: error.message || "Unable to generate account hash" });
+    }
+  });
+
+  app.delete("/api/me/account-hash", requireAuth, async (req, res) => {
+    try {
+      const user = await store.disableUserAccountHashLogin({ userId: req.user.id });
+      res.json({ ok: true, user });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to disable account hash login" });
+    }
+  });
+
+  app.post("/api/me/password", requireAuth, async (req, res) => {
+    const password = String(req.body?.password || "");
+    const currentPassword = String(req.body?.currentPassword || "");
+    if (!password) {
+      return res.status(400).json({ error: "Password is required" });
+    }
+
+    try {
+      const user = await store.setUserPasswordLogin({ userId: req.user.id, password, currentPassword });
+      res.status(201).json({ user });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to enable password login" });
+    }
+  });
+
+  app.delete("/api/me/password", requireAuth, async (req, res) => {
+    const currentPassword = String(req.body?.currentPassword || "");
+    if (!currentPassword) {
+      return res.status(400).json({ error: "Current password is required" });
+    }
+
+    try {
+      const user = await store.disableUserPasswordLogin({ userId: req.user.id, currentPassword });
+      res.json({ ok: true, user });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to disable password login" });
     }
   });
 

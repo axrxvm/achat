@@ -29,6 +29,10 @@ const oauthButton = document.getElementById("oauth-login");
 const accountHashLoginForm = document.getElementById("account-hash-login-form");
 const accountHashLoginInput = document.getElementById("account-hash-login-input");
 const accountHashLoginButton = document.getElementById("account-hash-login-button");
+const passwordLoginForm = document.getElementById("password-login-form");
+const passwordLoginEmailInput = document.getElementById("password-login-email-input");
+const passwordLoginPasswordInput = document.getElementById("password-login-password-input");
+const passwordLoginButton = document.getElementById("password-login-button");
 const logoutButton = document.getElementById("logout");
 
 const roomPanel = document.getElementById("room-panel");
@@ -72,7 +76,15 @@ const settingsRoomList = document.getElementById("settings-room-list");
 const accountHashStatus = document.getElementById("account-hash-status");
 const generateAccountHashButton = document.getElementById("generate-account-hash");
 const copyAccountHashButton = document.getElementById("copy-account-hash");
+const disableAccountHashButton = document.getElementById("disable-account-hash");
 const accountHashDisplay = document.getElementById("account-hash-display");
+const passwordLoginStatus = document.getElementById("password-login-status");
+const passwordLoginEmail = document.getElementById("password-login-email");
+const settingsPasswordForm = document.getElementById("settings-password-form");
+const settingsCurrentPasswordInput = document.getElementById("settings-current-password-input");
+const settingsPasswordInput = document.getElementById("settings-password-input");
+const settingsPasswordSubmit = document.getElementById("settings-password-submit");
+const disablePasswordLoginButton = document.getElementById("disable-password-login");
 
 const createRoomForm = document.getElementById("create-room-form");
 const joinRoomForm = document.getElementById("join-room-form");
@@ -1331,15 +1343,62 @@ const renderAccountHashSettings = () => {
   const hasAccountHash = Boolean(state.user?.hasAccountHash);
   generateAccountHashButton.textContent = hasAccountHash ? "Regenerate Account Hash" : "Generate Account Hash";
   generateAccountHashButton.disabled = !state.user;
+  disableAccountHashButton.classList.toggle("hidden", !hasAccountHash);
+  disableAccountHashButton.disabled = !hasAccountHash;
 
   if (!state.user) {
     accountHashStatus.textContent = "Login required.";
+    disableAccountHashButton.classList.add("hidden");
+    disableAccountHashButton.disabled = true;
     return;
   }
 
   accountHashStatus.textContent = hasAccountHash
     ? "Hash login is active. Format: word(optionalNumber)-word-word-word-number. Regenerating replaces your current hash."
     : "Generate an account hash with format word(optionalNumber)-word-word-word-number, and keep it private.";
+};
+
+const renderPasswordLoginSettings = () => {
+  const hasUser = Boolean(state.user);
+  const hasPasswordLogin = Boolean(state.user?.hasPasswordLogin);
+  const oauthEmail = String(state.user?.email || "").trim().toLowerCase();
+  const loginEmail = String(state.user?.passwordLoginEmail || oauthEmail || "").trim().toLowerCase();
+
+  if (!hasUser) {
+    settingsPasswordSubmit.disabled = true;
+    settingsPasswordSubmit.textContent = "Enable";
+    settingsCurrentPasswordInput.value = "";
+    settingsCurrentPasswordInput.disabled = true;
+    settingsPasswordInput.value = "";
+    settingsPasswordInput.disabled = true;
+    disablePasswordLoginButton.classList.add("hidden");
+    passwordLoginStatus.textContent = "Login required.";
+    passwordLoginEmail.textContent = "";
+    return;
+  }
+
+  const canEnable = Boolean(oauthEmail);
+  const requiresCurrentPassword = hasPasswordLogin;
+  settingsCurrentPasswordInput.disabled = !requiresCurrentPassword;
+  settingsCurrentPasswordInput.required = requiresCurrentPassword;
+  if (!requiresCurrentPassword) {
+    settingsCurrentPasswordInput.value = "";
+  }
+  settingsPasswordInput.disabled = !canEnable;
+  settingsPasswordSubmit.disabled = !canEnable;
+  settingsPasswordSubmit.textContent = hasPasswordLogin ? "Update" : "Enable";
+  disablePasswordLoginButton.classList.toggle("hidden", !hasPasswordLogin);
+  disablePasswordLoginButton.disabled = !hasPasswordLogin;
+
+  if (hasPasswordLogin) {
+    passwordLoginStatus.textContent = "Password login is enabled. Current password is required to update or disable it.";
+  } else if (!canEnable) {
+    passwordLoginStatus.textContent = "Your OAuth provider did not supply an email, so password login cannot be enabled.";
+  } else {
+    passwordLoginStatus.textContent = "Enable login with email + password. Passwords are stored as secure hashes.";
+  }
+
+  passwordLoginEmail.textContent = loginEmail ? `Login email: ${loginEmail}` : "";
 };
 
 const copyText = async value => {
@@ -1410,6 +1469,7 @@ const openSettingsModal = () => {
   settingsModal.setAttribute("aria-hidden", "false");
   renderSettingsRooms();
   renderAccountHashSettings();
+  renderPasswordLoginSettings();
 
   if (state.user) {
     displayNameInput.value = state.user.displayName;
@@ -1868,6 +1928,7 @@ const renderRooms = ({ refreshActivePanels = true } = {}) => {
     if (!settingsModal.classList.contains("hidden")) {
       renderSettingsRooms();
       renderAccountHashSettings();
+      renderPasswordLoginSettings();
     }
     syncRoomModalForRoomCount();
     return;
@@ -1899,6 +1960,7 @@ const renderRooms = ({ refreshActivePanels = true } = {}) => {
   if (!settingsModal.classList.contains("hidden")) {
     renderSettingsRooms();
     renderAccountHashSettings();
+    renderPasswordLoginSettings();
   }
   syncRoomModalForRoomCount();
 };
@@ -2389,6 +2451,7 @@ const bootAuthenticated = async () => {
   state.rooms = applyStoredRoomOrder(data.rooms || []);
   setGeneratedAccountHash("");
   renderAccountHashSettings();
+  renderPasswordLoginSettings();
 
   authView.classList.add("hidden");
   appView.classList.remove("hidden");
@@ -2430,6 +2493,33 @@ accountHashLoginForm.addEventListener("submit", async event => {
     notify(error.message || "Unable to login with account hash");
   } finally {
     accountHashLoginButton.disabled = false;
+  }
+});
+
+passwordLoginForm.addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const email = String(passwordLoginEmailInput.value || "").trim().toLowerCase();
+  const password = String(passwordLoginPasswordInput.value || "");
+  if (!email || !password) {
+    notify("Email and password are required");
+    return;
+  }
+
+  passwordLoginButton.disabled = true;
+  try {
+    await request("/auth/password/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password })
+    });
+
+    passwordLoginForm.reset();
+    await bootAuthenticated();
+    notify("Logged in with email and password");
+  } catch (error) {
+    notify(error.message || "Unable to login with email and password");
+  } finally {
+    passwordLoginButton.disabled = false;
   }
 });
 
@@ -2475,6 +2565,87 @@ copyAccountHashButton.addEventListener("click", async () => {
     notify("Account hash copied");
   } catch (error) {
     notify("Clipboard copy failed");
+  }
+});
+
+disableAccountHashButton.addEventListener("click", async () => {
+  const confirmed = window.confirm("Disable account hash login for this account?");
+  if (!confirmed) {
+    return;
+  }
+
+  disableAccountHashButton.disabled = true;
+  try {
+    const result = await request("/api/me/account-hash", { method: "DELETE" });
+    state.user = result.user;
+    setGeneratedAccountHash("");
+    renderAccountHashSettings();
+    notify("Account hash login disabled");
+  } catch (error) {
+    notify(error.message || "Unable to disable account hash login");
+  } finally {
+    disableAccountHashButton.disabled = false;
+  }
+});
+
+settingsPasswordForm.addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const password = String(settingsPasswordInput.value || "");
+  const currentPassword = String(settingsCurrentPasswordInput.value || "");
+  const requiresCurrentPassword = Boolean(state.user?.hasPasswordLogin);
+  if (!password) {
+    notify("Password is required");
+    return;
+  }
+  if (requiresCurrentPassword && !currentPassword) {
+    notify("Current password is required");
+    return;
+  }
+
+  settingsPasswordSubmit.disabled = true;
+  try {
+    const result = await request("/api/me/password", {
+      method: "POST",
+      body: JSON.stringify({ password, currentPassword })
+    });
+    state.user = result.user;
+    settingsPasswordForm.reset();
+    renderPasswordLoginSettings();
+    notify(requiresCurrentPassword ? "Password updated" : "Password login enabled");
+  } catch (error) {
+    notify(error.message || "Unable to enable password login");
+  } finally {
+    settingsPasswordSubmit.disabled = false;
+  }
+});
+
+disablePasswordLoginButton.addEventListener("click", async () => {
+  const confirmed = window.confirm("Disable email/password login for this account?");
+  if (!confirmed) {
+    return;
+  }
+
+  const currentPassword = String(settingsCurrentPasswordInput.value || "");
+  if (!currentPassword) {
+    notify("Current password is required");
+    return;
+  }
+
+  disablePasswordLoginButton.disabled = true;
+  try {
+    const result = await request("/api/me/password", {
+      method: "DELETE",
+      body: JSON.stringify({ currentPassword })
+    });
+    state.user = result.user;
+    settingsPasswordForm.reset();
+    renderPasswordLoginSettings();
+    notify("Password login disabled");
+  } catch (error) {
+    notify(error.message || "Unable to disable password login");
+  } finally {
+    disablePasswordLoginButton.disabled = false;
   }
 });
 
