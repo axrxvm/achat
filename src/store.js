@@ -11,6 +11,7 @@ const MESSAGE_ID_REGEX = /^\d{10}$/;
 const DEFAULT_MAIN_DB_NAME = "achat_main";
 const DEFAULT_MESSAGE_DB_NAME = "achat_messages";
 const DELETED_USER_OAUTH_KEY = "system:deleted-user";
+const MESSAGE_PERSIST_SOFT_TIMEOUT_MS = 80;
 const ACCOUNT_HASH_WORDS = [
   "amber",
   "anchor",
@@ -478,8 +479,29 @@ const ensureMongoConnections = async () => {
 };
 
 const queueWrite = async operation => {
-  persistQueue = persistQueue.then(operation);
+  persistQueue = persistQueue
+    .catch(error => {
+      console.error("[ERROR] Persist queue operation failed", error);
+    })
+    .then(operation);
   return persistQueue;
+};
+
+const sleep = ms =>
+  new Promise(resolve => {
+    setTimeout(resolve, Math.max(0, Number(ms) || 0));
+  });
+
+const waitForPromiseWithTimeout = async (promise, timeoutMs) => {
+  const timeout = Math.max(0, Number(timeoutMs) || 0);
+  if (timeout === 0) {
+    await promise;
+    return true;
+  }
+
+  const timeoutToken = Symbol("timeout");
+  const result = await Promise.race([promise, sleep(timeout).then(() => timeoutToken)]);
+  return result !== timeoutToken;
 };
 
 const syncCollection = async (collection, entries) => {
@@ -1422,7 +1444,13 @@ const addMessage = async ({ roomId, userId, text }) => {
   messagesByRoomId.set(message.roomId, roomMessages);
   refreshLatestMessageForRoom(message.roomId);
   touchRoom(room);
-  await persistMessageAndRoom({ message, room });
+  const persistTask = persistMessageAndRoom({ message, room })
+    .then(() => true)
+    .catch(error => {
+      console.error(`[ERROR] Failed to persist message ${message.id}`, error);
+      return false;
+    });
+  await waitForPromiseWithTimeout(persistTask, MESSAGE_PERSIST_SOFT_TIMEOUT_MS);
 
   return formatMessageForClient(message);
 };
@@ -1456,7 +1484,13 @@ const deleteMessage = async ({ roomId, messageId, requesterUserId }) => {
   }
   refreshLatestMessageForRoom(room.id);
   touchRoom(room);
-  await deletePersistedMessageAndRoom({ messageId: normalizedMessageId, room });
+  const persistTask = deletePersistedMessageAndRoom({ messageId: normalizedMessageId, room })
+    .then(() => true)
+    .catch(error => {
+      console.error(`[ERROR] Failed to persist message deletion ${normalizedMessageId}`, error);
+      return false;
+    });
+  await waitForPromiseWithTimeout(persistTask, MESSAGE_PERSIST_SOFT_TIMEOUT_MS);
 
   return {
     roomId: String(room.id),
