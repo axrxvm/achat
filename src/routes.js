@@ -41,6 +41,39 @@ const registerRoutes = ({
     return Math.max(1, Math.min(200, Math.floor(parsed)));
   };
 
+  const isBotUser = req => Boolean(req?.user?.isBot);
+
+  const requireHumanUser = (req, res) => {
+    if (!isBotUser(req)) {
+      return true;
+    }
+
+    res.status(403).json({ error: "This endpoint is not available for bot tokens" });
+    return false;
+  };
+
+  const requireBotUser = (req, res) => {
+    if (isBotUser(req)) {
+      return true;
+    }
+
+    res.status(403).json({ error: "This endpoint requires bot authentication" });
+    return false;
+  };
+
+  const requireDeveloperModeUser = (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return false;
+    }
+
+    if (req.user?.developerMode) {
+      return true;
+    }
+
+    res.status(403).json({ error: "Developer Mode is required" });
+    return false;
+  };
+
   app.get("/auth/login", async (req, res) => {
     try {
       const signupUrl = await fetchSignupUrl(req);
@@ -113,8 +146,10 @@ const registerRoutes = ({
   });
 
   app.post("/auth/logout", requireAuth, async (req, res) => {
-    await store.deleteSession(req.sessionId);
-    clearSessionCookie(res);
+    if (req.sessionId) {
+      await store.deleteSession(req.sessionId);
+      clearSessionCookie(res);
+    }
     res.json({ ok: true });
   });
 
@@ -126,6 +161,10 @@ const registerRoutes = ({
   });
 
   app.post("/api/me/account-hash", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     try {
       const result = await store.generateAccountHashForUser({ userId: req.user.id });
       res.status(201).json(result);
@@ -135,6 +174,10 @@ const registerRoutes = ({
   });
 
   app.delete("/api/me/account-hash", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     try {
       const user = await store.disableUserAccountHashLogin({ userId: req.user.id });
       res.json({ ok: true, user });
@@ -144,6 +187,10 @@ const registerRoutes = ({
   });
 
   app.post("/api/me/password", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     const password = String(req.body?.password || "");
     const currentPassword = String(req.body?.currentPassword || "");
     if (!password) {
@@ -159,6 +206,10 @@ const registerRoutes = ({
   });
 
   app.delete("/api/me/password", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     const currentPassword = String(req.body?.currentPassword || "");
     if (!currentPassword) {
       return res.status(400).json({ error: "Current password is required" });
@@ -172,7 +223,25 @@ const registerRoutes = ({
     }
   });
 
+  app.patch("/api/me/developer-mode", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
+    const enabled = Boolean(req.body?.enabled);
+    try {
+      const user = await store.updateUserDeveloperMode({ userId: req.user.id, enabled });
+      res.json({ user });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to update developer mode" });
+    }
+  });
+
   app.patch("/api/me", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     const displayName = String(req.body?.displayName || "").trim();
     if (!displayName) {
       return res.status(400).json({ error: "Display name is required" });
@@ -195,6 +264,10 @@ const registerRoutes = ({
   });
 
   app.delete("/api/me", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     try {
       const result = await store.deleteUserAccount({ userId: req.user.id });
 
@@ -237,6 +310,186 @@ const registerRoutes = ({
       res.json({ ok: true });
     } catch (error) {
       res.status(400).json({ error: error.message || "Unable to delete account" });
+    }
+  });
+
+  app.get("/api/apps/bots", requireAuth, async (req, res) => {
+    if (!requireDeveloperModeUser(req, res)) {
+      return;
+    }
+
+    try {
+      const bots = store.listBotsForOwner({ ownerUserId: req.user.id });
+      res.json({ bots });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to list bot apps" });
+    }
+  });
+
+  app.post("/api/apps/bots", requireAuth, async (req, res) => {
+    if (!requireDeveloperModeUser(req, res)) {
+      return;
+    }
+
+    const displayName = String(req.body?.displayName || "").trim();
+    if (!displayName) {
+      return res.status(400).json({ error: "Bot display name is required" });
+    }
+
+    try {
+      const result = await store.createBotForOwner({
+        ownerUserId: req.user.id,
+        displayName
+      });
+      realtime.sendRoomsUpdateToUser(req.user.id);
+      res.status(201).json({
+        bot: result.bot,
+        authToken: result.authToken,
+        tokenType: "Bearer"
+      });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to create bot app" });
+    }
+  });
+
+  app.patch("/api/apps/bots/:botUserId", requireAuth, async (req, res) => {
+    if (!requireDeveloperModeUser(req, res)) {
+      return;
+    }
+
+    const displayName = String(req.body?.displayName || "").trim();
+    if (!displayName) {
+      return res.status(400).json({ error: "Bot display name is required" });
+    }
+
+    try {
+      const bot = await store.updateBotDisplayNameForOwner({
+        ownerUserId: req.user.id,
+        botUserId: req.params.botUserId,
+        displayName
+      });
+
+      realtime.sendRoomsUpdateToUser(req.user.id);
+      for (const room of store.listRoomsForUser(bot.id)) {
+        realtime.sendRoomsUpdateForRoomUsers(room.id);
+        if (room.accessStatus === "member") {
+          realtime.emitPresence(room.id);
+        }
+      }
+
+      res.json({ bot });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to update bot app" });
+    }
+  });
+
+  app.post("/api/apps/bots/:botUserId/token", requireAuth, async (req, res) => {
+    if (!requireDeveloperModeUser(req, res)) {
+      return;
+    }
+
+    try {
+      const result = await store.regenerateBotTokenForOwner({
+        ownerUserId: req.user.id,
+        botUserId: req.params.botUserId
+      });
+      res.status(201).json({
+        bot: result.bot,
+        authToken: result.authToken,
+        tokenType: "Bearer"
+      });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to regenerate bot token" });
+    }
+  });
+
+  app.delete("/api/apps/bots/:botUserId", requireAuth, async (req, res) => {
+    if (!requireDeveloperModeUser(req, res)) {
+      return;
+    }
+
+    try {
+      const result = await store.deleteBotForOwner({
+        ownerUserId: req.user.id,
+        botUserId: req.params.botUserId
+      });
+
+      for (const roomId of result.affectedRoomIds || []) {
+        realtime.sendRoomsUpdateForRoomUsers(roomId);
+        realtime.emitPresence(roomId);
+      }
+
+      for (const userId of result.affectedUserIds || []) {
+        realtime.sendRoomsUpdateToUser(userId);
+      }
+
+      realtime.sendRoomsUpdateToUser(req.user.id);
+      res.json({ ok: true, botUserId: result.botUserId });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to delete bot app" });
+    }
+  });
+
+  app.get("/api/bot/me", requireAuth, (req, res) => {
+    if (!requireBotUser(req, res)) {
+      return;
+    }
+
+    res.json({
+      user: req.user,
+      rooms: realtime.getRoomsPayloadForUser(req.user.id)
+    });
+  });
+
+  app.get("/api/bot/rooms/:roomId/info", requireAuth, (req, res) => {
+    if (!requireBotUser(req, res)) {
+      return;
+    }
+
+    try {
+      const room = store.getLimitedRoomInfoForUser({
+        roomId: req.params.roomId,
+        userId: req.user.id
+      });
+      res.json({ room });
+    } catch (error) {
+      const message = error.message || "Unable to get room info";
+      const normalized = String(message).toLowerCase();
+      const status = normalized.includes("not found")
+        ? 404
+        : normalized.includes("access")
+          ? 403
+          : 400;
+      res.status(status).json({ error: message });
+    }
+  });
+
+  app.get("/api/bot/users/:targetUserId/info", requireAuth, (req, res) => {
+    if (!requireBotUser(req, res)) {
+      return;
+    }
+
+    const roomId = String(req.query?.roomId || "").trim();
+    if (!roomId) {
+      return res.status(400).json({ error: "roomId query parameter is required" });
+    }
+
+    try {
+      const user = store.getLimitedUserInfoInRoomForUser({
+        requesterUserId: req.user.id,
+        targetUserId: req.params.targetUserId,
+        roomId
+      });
+      res.json({ user });
+    } catch (error) {
+      const message = error.message || "Unable to get user info";
+      const normalized = String(message).toLowerCase();
+      const status = normalized.includes("not found")
+        ? 404
+        : normalized.includes("access")
+          ? 403
+          : 400;
+      res.status(status).json({ error: message });
     }
   });
 
@@ -304,6 +557,10 @@ const registerRoutes = ({
   });
 
   app.post("/api/rooms", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     const name = String(req.body?.name || "").trim();
     if (!name) {
       return res.status(400).json({ error: "Room name is required" });
@@ -330,6 +587,10 @@ const registerRoutes = ({
   });
 
   app.patch("/api/rooms/:roomId/privacy", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     try {
       const room = await store.setRoomPrivacy({
         roomId: req.params.roomId,
@@ -347,6 +608,10 @@ const registerRoutes = ({
   });
 
   app.patch("/api/rooms/:roomId/discovery", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     try {
       const room = await store.setRoomDiscoverability({
         roomId: req.params.roomId,
@@ -371,10 +636,13 @@ const registerRoutes = ({
       realtime.emitPresence(result.room.id);
 
       if (result.status === "pending") {
+        const pendingMessage = req.user?.isBot
+          ? "Bot join request sent. Owner approval is required before API actions are allowed."
+          : "Room is private. Join request sent to owner.";
         return res.status(202).json({
           room: result.room,
           status: "pending",
-          message: "Room is private. Join request sent to owner."
+          message: pendingMessage
         });
       }
 
@@ -399,6 +667,10 @@ const registerRoutes = ({
   });
 
   app.post("/api/rooms/:roomId/ownership/:targetUserId", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     try {
       const room = await store.transferRoomOwnership({
         roomId: req.params.roomId,
@@ -416,6 +688,10 @@ const registerRoutes = ({
   });
 
   app.delete("/api/rooms/:roomId", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     try {
       const result = await store.deleteRoom({
         roomId: req.params.roomId,
@@ -433,6 +709,10 @@ const registerRoutes = ({
   });
 
   app.post("/api/rooms/:roomId/members/:targetUserId/kick", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     try {
       const room = await store.kickMember({
         roomId: req.params.roomId,
@@ -451,6 +731,10 @@ const registerRoutes = ({
   });
 
   app.post("/api/rooms/:roomId/waitlist/:targetUserId/approve", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     try {
       const room = await store.approvePendingUser({
         roomId: req.params.roomId,
@@ -469,6 +753,10 @@ const registerRoutes = ({
   });
 
   app.post("/api/rooms/:roomId/waitlist/:targetUserId/reject", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
     try {
       const room = await store.rejectPendingUser({
         roomId: req.params.roomId,

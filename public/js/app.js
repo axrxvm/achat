@@ -2,6 +2,8 @@ const state = {
   user: null,
   rooms: [],
   discoverableRooms: [],
+  botApps: [],
+  botTokensById: new Map(),
   activeRoomId: null,
   membersByRoom: new Map(),
   pendingByRoom: new Map(),
@@ -70,6 +72,7 @@ const composerAttachmentList = document.getElementById("composer-attachment-list
 
 const displayNameForm = document.getElementById("display-name-form");
 const displayNameInput = document.getElementById("display-name-input");
+const developerModeToggle = document.getElementById("developer-mode-toggle");
 const openSettingsButton = document.getElementById("open-settings");
 const deleteAccountButton = document.getElementById("delete-account");
 const settingsRoomList = document.getElementById("settings-room-list");
@@ -89,6 +92,7 @@ const disablePasswordLoginButton = document.getElementById("disable-password-log
 const createRoomForm = document.getElementById("create-room-form");
 const joinRoomForm = document.getElementById("join-room-form");
 const openRoomModalButton = document.getElementById("open-room-modal");
+const openAppsModalButton = document.getElementById("open-apps-modal");
 
 const roomModal = document.getElementById("room-modal");
 const roomModalBackdrop = document.getElementById("room-modal-backdrop");
@@ -98,13 +102,24 @@ const refreshDiscoveryButton = document.getElementById("refresh-discovery");
 const settingsModal = document.getElementById("settings-modal");
 const settingsModalBackdrop = document.getElementById("settings-modal-backdrop");
 const settingsModalCloseButton = document.getElementById("settings-modal-close");
+const appsModal = document.getElementById("apps-modal");
+const appsModalBackdrop = document.getElementById("apps-modal-backdrop");
+const appsModalCloseButton = document.getElementById("apps-modal-close");
+const createBotAppForm = document.getElementById("create-bot-app-form");
+const createBotAppNameInput = document.getElementById("create-bot-app-name");
+const botAppList = document.getElementById("bot-app-list");
 
 const toast = document.getElementById("toast");
 const memberContextMenu = document.getElementById("member-context-menu");
+const memberContextCopyIdButton = document.getElementById("member-context-copy-id");
 const memberContextKickButton = document.getElementById("member-context-kick");
 const memberContextTransferButton = document.getElementById("member-context-transfer");
 const messageContextMenu = document.getElementById("message-context-menu");
+const messageContextCopyIdButton = document.getElementById("message-context-copy-id");
+const messageContextCopyTimestampButton = document.getElementById("message-context-copy-timestamp");
 const messageContextDeleteButton = document.getElementById("message-context-delete");
+const roomContextMenu = document.getElementById("room-context-menu");
+const roomContextCopyIdButton = document.getElementById("room-context-copy-id");
 
 let toastTimer = null;
 let roomPollTimer = null;
@@ -113,6 +128,8 @@ let roomModalLocked = false;
 let mobileDrawer = null;
 let memberContextTargetUserId = null;
 let messageContextTargetMessageId = null;
+let messageContextTargetTimestamp = "";
+let roomContextTargetRoomId = null;
 let forceNextMessageStickToBottom = false;
 let lastRenderedMessageKey = "";
 let lastRenderedMessageRoomId = null;
@@ -631,13 +648,14 @@ const canDeleteMessage = message => {
 const renderMessageTile = message => {
   const isSelf = message.userId === state.user?.id;
   const isOptimistic = Boolean(message.optimistic);
+  const isBot = Boolean(message.userIsBot);
   const { bodyText, embedUrls } = partitionMessageText(message.text);
   const embeds = renderMessageEmbeds(embedUrls);
   const messageId = escapeHtml(String(message.id || ""));
   return `
     <article class="message ${isSelf ? "self" : ""} ${isOptimistic ? "sending" : ""}" data-message-id="${messageId}">
       <header>
-        <span class="author">${escapeHtml(message.username)}</span>
+        <span class="author">${escapeHtml(message.username)}${isBot ? ' <span class="bot-tag bot-tag--inline">BOT</span>' : ""}</span>
         <span class="message-meta">
           <time>${formatTime(message.createdAt)}</time>
           ${isOptimistic ? '<span class="message-send-state">Sending...</span>' : ""}
@@ -941,8 +959,15 @@ const hideMemberContextMenu = () => {
 
 const hideMessageContextMenu = () => {
   messageContextTargetMessageId = null;
+  messageContextTargetTimestamp = "";
   messageContextMenu.classList.add("hidden");
   messageContextMenu.setAttribute("aria-hidden", "true");
+};
+
+const hideRoomContextMenu = () => {
+  roomContextTargetRoomId = null;
+  roomContextMenu.classList.add("hidden");
+  roomContextMenu.setAttribute("aria-hidden", "true");
 };
 
 const positionContextMenu = ({ menu, x, y }) => {
@@ -981,6 +1006,18 @@ const showMessageContextMenu = ({ x, y, messageId }) => {
   messageContextMenu.classList.remove("hidden");
   messageContextMenu.setAttribute("aria-hidden", "false");
   positionContextMenu({ menu: messageContextMenu, x, y });
+};
+
+const showRoomContextMenu = ({ x, y, roomId }) => {
+  roomContextTargetRoomId = String(roomId || "");
+  if (!roomContextTargetRoomId) {
+    hideRoomContextMenu();
+    return;
+  }
+
+  roomContextMenu.classList.remove("hidden");
+  roomContextMenu.setAttribute("aria-hidden", "false");
+  positionContextMenu({ menu: roomContextMenu, x, y });
 };
 
 const request = async (url, options = {}) => {
@@ -1401,6 +1438,151 @@ const renderPasswordLoginSettings = () => {
   passwordLoginEmail.textContent = loginEmail ? `Login email: ${loginEmail}` : "";
 };
 
+const renderDeveloperModeSettings = () => {
+  const enabled = Boolean(state.user?.developerMode);
+  developerModeToggle.disabled = !state.user;
+  developerModeToggle.checked = enabled;
+  renderManageAppsButton();
+
+  if (!isBotAppManagerEnabled() && appsModal && !appsModal.classList.contains("hidden")) {
+    closeAppsModal();
+  }
+};
+
+const isBotAppManagerEnabled = () => Boolean(state.user && !state.user.isBot && state.user.developerMode);
+
+const renderManageAppsButton = () => {
+  if (!openAppsModalButton) {
+    return;
+  }
+
+  const enabled = isBotAppManagerEnabled();
+  openAppsModalButton.classList.toggle("hidden", !enabled);
+  openAppsModalButton.disabled = !enabled;
+};
+
+const formatDateTime = isoDate => {
+  const value = String(isoDate || "").trim();
+  if (!value) {
+    return "Unknown";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
+};
+
+const maskTokenPreview = token => {
+  const value = String(token || "").trim();
+  if (!value) {
+    return "";
+  }
+
+  if (value.length <= 18) {
+    return value;
+  }
+
+  return `${value.slice(0, 12)}...${value.slice(-6)}`;
+};
+
+const renderBotApps = () => {
+  if (!botAppList) {
+    return;
+  }
+
+  if (!isBotAppManagerEnabled()) {
+    botAppList.innerHTML = '<p class="empty">Enable Developer Mode to manage bot apps.</p>';
+    return;
+  }
+
+  if (!Array.isArray(state.botApps) || state.botApps.length === 0) {
+    botAppList.innerHTML = '<p class="empty">No bot apps yet. Create your first bot.</p>';
+    return;
+  }
+
+  botAppList.innerHTML = state.botApps
+    .map(bot => {
+      const botId = String(bot?.id || "");
+      const hasToken = state.botTokensById.has(botId);
+      const token = hasToken ? String(state.botTokensById.get(botId) || "") : "";
+      const maskedToken = hasToken ? maskTokenPreview(token) : "";
+      return `
+        <article class="bot-app-card" data-bot-user-id="${escapeHtml(botId)}">
+          <div class="bot-app-card__header">
+            <div>
+              <p class="bot-app-card__name">${escapeHtml(bot?.displayName || "Bot")}</p>
+              <p class="bot-app-card__meta">User ID ${escapeHtml(botId)} · Created ${escapeHtml(formatDateTime(bot?.createdAt))}</p>
+            </div>
+            <span class="bot-tag">BOT</span>
+          </div>
+          <form class="bot-app-rename-form" data-bot-action="rename" data-bot-user-id="${escapeHtml(botId)}" autocomplete="off">
+            <div class="inline-field">
+              <input
+                name="displayName"
+                value="${escapeHtml(bot?.displayName || "")}"
+                maxlength="32"
+                placeholder="Bot display name"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                required
+              />
+              <button class="secondary-button" type="submit">Rename</button>
+            </div>
+          </form>
+          <div class="bot-app-card__token">
+            <p class="bot-app-card__token-label">Auth Token</p>
+            ${
+              hasToken
+                ? `<code class="bot-app-card__token-value" title="${escapeHtml(token)}">${escapeHtml(maskedToken)}</code>`
+                : '<p class="bot-app-card__token-hidden">Hidden for safety. Regenerate to reveal a new token.</p>'
+            }
+          </div>
+          <div class="bot-app-card__actions">
+            <button class="secondary-button" type="button" data-bot-action="copy-id" data-bot-user-id="${escapeHtml(botId)}">Copy ID</button>
+            <button class="secondary-button" type="button" data-bot-action="rotate-token" data-bot-user-id="${escapeHtml(botId)}">Regenerate Token</button>
+            <button class="secondary-button danger" type="button" data-bot-action="delete" data-bot-user-id="${escapeHtml(botId)}">Delete</button>
+            ${
+              hasToken
+                ? `<button class="secondary-button" type="button" data-bot-action="copy-token" data-bot-user-id="${escapeHtml(botId)}">Copy Token</button>`
+                : ""
+            }
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+};
+
+const loadBotApps = async ({ showErrors = true } = {}) => {
+  if (!isBotAppManagerEnabled()) {
+    state.botApps = [];
+    state.botTokensById = new Map();
+    renderBotApps();
+    return;
+  }
+
+  try {
+    const data = await request("/api/apps/bots");
+    state.botApps = Array.isArray(data.bots) ? data.bots : [];
+    renderBotApps();
+  } catch (error) {
+    if (showErrors) {
+      notify(error.message || "Unable to load bot apps");
+    }
+  }
+};
+
 const copyText = async value => {
   const normalized = String(value || "").trim();
   if (!normalized) {
@@ -1458,18 +1640,52 @@ const renderSettingsRooms = () => {
     .join("");
 };
 
+const openAppsModal = () => {
+  if (!isBotAppManagerEnabled()) {
+    notify("Enable Developer Mode to manage bot apps.");
+    return;
+  }
+
+  closeMobileDrawer();
+  stopLocalTyping({ emit: true });
+  hideMemberContextMenu();
+  hideMessageContextMenu();
+  hideRoomContextMenu();
+  closeChatActionsMenu();
+  closeRoomModal({ force: true });
+  closeSettingsModal();
+
+  appsModal.classList.remove("hidden");
+  appsModal.setAttribute("aria-hidden", "false");
+  void loadBotApps({ showErrors: true });
+
+  window.setTimeout(() => {
+    if (createBotAppNameInput) {
+      createBotAppNameInput.focus();
+    }
+  }, 0);
+};
+
+const closeAppsModal = () => {
+  appsModal.classList.add("hidden");
+  appsModal.setAttribute("aria-hidden", "true");
+};
+
 const openSettingsModal = () => {
   closeMobileDrawer();
   stopLocalTyping({ emit: true });
   hideMemberContextMenu();
   hideMessageContextMenu();
+  hideRoomContextMenu();
   closeChatActionsMenu();
+  closeAppsModal();
 
   settingsModal.classList.remove("hidden");
   settingsModal.setAttribute("aria-hidden", "false");
   renderSettingsRooms();
   renderAccountHashSettings();
   renderPasswordLoginSettings();
+  renderDeveloperModeSettings();
 
   if (state.user) {
     displayNameInput.value = state.user.displayName;
@@ -1490,8 +1706,10 @@ const openRoomModal = ({ locked = false } = {}) => {
   stopLocalTyping({ emit: true });
   hideMemberContextMenu();
   hideMessageContextMenu();
+  hideRoomContextMenu();
   closeChatActionsMenu();
   closeSettingsModal();
+  closeAppsModal();
 
   const wasHidden = roomModal.classList.contains("hidden");
   roomModalLocked = locked;
@@ -1605,7 +1823,7 @@ const renderMembers = () => {
         <li data-member-user-id="${member.id}">
           <span class="member-info">
             <span class="presence ${presenceStatus}"></span>
-            <span class="member-name">${escapeHtml(member.displayName)}</span>
+            <span class="member-name">${escapeHtml(member.displayName)}${member.isBot ? ' <span class="bot-tag bot-tag--inline">BOT</span>' : ""}</span>
           </span>
         </li>
       `;
@@ -1624,7 +1842,7 @@ const renderMembers = () => {
               <li>
                 <span class="member-info">
                   <span class="presence offline"></span>
-                  <span class="member-name">${escapeHtml(entry.displayName)}</span>
+                  <span class="member-name">${escapeHtml(entry.displayName)}${entry.isBot ? ' <span class="bot-tag bot-tag--inline">BOT</span>' : ""}</span>
                 </span>
                 <span class="member-actions">
                   <button class="inline-button accept" data-action="approve" data-user-id="${entry.id}">Approve</button>
@@ -1862,7 +2080,10 @@ const getRoomPreviewText = room => {
   }
 
   if (room.latestMessage) {
-    return `${room.latestMessage.username || "Unknown"}: ${room.latestMessage.text}`;
+    const authorName = room.latestMessage.userIsBot
+      ? `${room.latestMessage.username || "Unknown"} [BOT]`
+      : room.latestMessage.username || "Unknown";
+    return `${authorName}: ${room.latestMessage.text}`;
   }
 
   return "No messages yet";
@@ -1900,6 +2121,8 @@ const getRoomListSignature = rooms => {
         room?.isPrivate ? "1" : "0",
         room?.isDiscoverable === false ? "0" : "1",
         String(latest?.createdAt || ""),
+        latest?.userIsBot ? "1" : "0",
+        String(latest?.username || ""),
         String(latest?.text || "")
       ].join("|");
     })
@@ -1908,6 +2131,7 @@ const getRoomListSignature = rooms => {
 
 const renderRooms = ({ refreshActivePanels = true } = {}) => {
   userChip.textContent = state.user ? `${state.user.displayName} · ${state.user.id}` : "";
+  renderManageAppsButton();
 
   if (state.user && document.activeElement !== displayNameInput) {
     displayNameInput.value = state.user.displayName;
@@ -1929,6 +2153,7 @@ const renderRooms = ({ refreshActivePanels = true } = {}) => {
       renderSettingsRooms();
       renderAccountHashSettings();
       renderPasswordLoginSettings();
+      renderDeveloperModeSettings();
     }
     syncRoomModalForRoomCount();
     return;
@@ -1961,6 +2186,7 @@ const renderRooms = ({ refreshActivePanels = true } = {}) => {
     renderSettingsRooms();
     renderAccountHashSettings();
     renderPasswordLoginSettings();
+    renderDeveloperModeSettings();
   }
   syncRoomModalForRoomCount();
 };
@@ -1978,6 +2204,7 @@ const updateRoomPreviewFromMessage = message => {
 
   room.latestMessage = {
     username: String(message.username || "").trim() || "Unknown",
+    userIsBot: Boolean(message.userIsBot),
     text: String(message.text || ""),
     createdAt: String(message.createdAt || "") || new Date().toISOString()
   };
@@ -2449,9 +2676,13 @@ const bootAuthenticated = async () => {
   const data = await request("/api/me");
   state.user = data.user;
   state.rooms = applyStoredRoomOrder(data.rooms || []);
+  state.botApps = [];
+  state.botTokensById = new Map();
   setGeneratedAccountHash("");
   renderAccountHashSettings();
   renderPasswordLoginSettings();
+  renderDeveloperModeSettings();
+  renderManageAppsButton();
 
   authView.classList.add("hidden");
   appView.classList.remove("hidden");
@@ -2653,6 +2884,10 @@ openRoomModalButton.addEventListener("click", () => {
   openRoomModal({ locked: state.rooms.length === 0 });
 });
 
+openAppsModalButton.addEventListener("click", () => {
+  openAppsModal();
+});
+
 openSettingsButton.addEventListener("click", () => {
   openSettingsModal();
 });
@@ -2692,6 +2927,196 @@ settingsModalCloseButton.addEventListener("click", () => {
 
 settingsModalBackdrop.addEventListener("click", () => {
   closeSettingsModal();
+});
+
+appsModalCloseButton.addEventListener("click", () => {
+  closeAppsModal();
+});
+
+appsModalBackdrop.addEventListener("click", () => {
+  closeAppsModal();
+});
+
+createBotAppForm.addEventListener("submit", async event => {
+  event.preventDefault();
+
+  if (!isBotAppManagerEnabled()) {
+    notify("Enable Developer Mode to manage bot apps.");
+    return;
+  }
+
+  const form = new FormData(createBotAppForm);
+  const displayName = String(form.get("displayName") || "").trim();
+  if (!displayName) {
+    notify("Bot display name is required");
+    return;
+  }
+
+  const submitButton = createBotAppForm.querySelector('button[type="submit"]');
+  if (submitButton) {
+    submitButton.disabled = true;
+  }
+
+  try {
+    const result = await request("/api/apps/bots", {
+      method: "POST",
+      body: JSON.stringify({ displayName })
+    });
+
+    const createdBot = result.bot || null;
+    const authToken = String(result.authToken || "").trim();
+    if (createdBot) {
+      state.botApps = [createdBot, ...(Array.isArray(state.botApps) ? state.botApps : [])];
+      if (authToken) {
+        state.botTokensById.set(String(createdBot.id), authToken);
+      }
+      renderBotApps();
+      notify("Bot created. Save its token now.");
+      createBotAppForm.reset();
+      if (createBotAppNameInput) {
+        createBotAppNameInput.focus();
+      }
+    }
+  } catch (error) {
+    notify(error.message || "Unable to create bot app");
+  } finally {
+    if (submitButton) {
+      submitButton.disabled = false;
+    }
+  }
+});
+
+botAppList.addEventListener("click", async event => {
+  const actionButton = event.target.closest("[data-bot-action][data-bot-user-id]");
+  if (!actionButton) {
+    return;
+  }
+
+  if (!isBotAppManagerEnabled()) {
+    notify("Enable Developer Mode to manage bot apps.");
+    return;
+  }
+
+  const action = String(actionButton.getAttribute("data-bot-action") || "");
+  const botUserId = String(actionButton.getAttribute("data-bot-user-id") || "");
+  if (!action || !botUserId) {
+    return;
+  }
+
+  const bot = state.botApps.find(entry => String(entry?.id || "") === botUserId);
+  if (!bot) {
+    notify("Bot not found");
+    return;
+  }
+
+  actionButton.disabled = true;
+  try {
+    if (action === "copy-id") {
+      const copied = await copyText(botUserId);
+      notify(copied ? "Bot user ID copied" : "Unable to copy bot user ID");
+      return;
+    }
+
+    if (action === "copy-token") {
+      const token = String(state.botTokensById.get(botUserId) || "").trim();
+      if (!token) {
+        notify("Token is hidden. Regenerate to reveal a new one.");
+        return;
+      }
+      const copied = await copyText(token);
+      notify(copied ? "Bot token copied" : "Unable to copy bot token");
+      return;
+    }
+
+    if (action === "rotate-token") {
+      const confirmed = window.confirm(`Regenerate auth token for ${bot.displayName}?`);
+      if (!confirmed) {
+        return;
+      }
+
+      const result = await request(`/api/apps/bots/${botUserId}/token`, { method: "POST" });
+      const authToken = String(result.authToken || "").trim();
+      if (authToken) {
+        state.botTokensById.set(botUserId, authToken);
+      }
+
+      if (result.bot) {
+        state.botApps = state.botApps.map(entry => (String(entry.id) === botUserId ? result.bot : entry));
+      }
+      renderBotApps();
+      notify("Token regenerated. Copy and store it securely.");
+      return;
+    }
+
+    if (action === "delete") {
+      const confirmed = window.confirm(`Delete bot ${bot.displayName}? This cannot be undone.`);
+      if (!confirmed) {
+        return;
+      }
+
+      await request(`/api/apps/bots/${botUserId}`, { method: "DELETE" });
+      state.botApps = state.botApps.filter(entry => String(entry?.id || "") !== botUserId);
+      state.botTokensById.delete(botUserId);
+      renderBotApps();
+      await refreshRoomsAndActive();
+      notify("Bot deleted");
+    }
+  } catch (error) {
+    notify(error.message || "Unable to update bot app");
+  } finally {
+    actionButton.disabled = false;
+  }
+});
+
+botAppList.addEventListener("submit", async event => {
+  const form = event.target.closest("[data-bot-action='rename'][data-bot-user-id]");
+  if (!form) {
+    return;
+  }
+
+  event.preventDefault();
+
+  if (!isBotAppManagerEnabled()) {
+    notify("Enable Developer Mode to manage bot apps.");
+    return;
+  }
+
+  const botUserId = String(form.getAttribute("data-bot-user-id") || "");
+  if (!botUserId) {
+    return;
+  }
+
+  const formData = new FormData(form);
+  const displayName = String(formData.get("displayName") || "").trim();
+  if (!displayName) {
+    notify("Bot display name is required");
+    return;
+  }
+
+  const submitButton = form.querySelector('button[type="submit"]');
+  if (submitButton) {
+    submitButton.disabled = true;
+  }
+
+  try {
+    const result = await request(`/api/apps/bots/${botUserId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ displayName })
+    });
+
+    if (result.bot) {
+      state.botApps = state.botApps.map(entry => (String(entry.id) === botUserId ? result.bot : entry));
+      renderBotApps();
+      await refreshRoomsAndActive();
+      notify("Bot name updated");
+    }
+  } catch (error) {
+    notify(error.message || "Unable to rename bot");
+  } finally {
+    if (submitButton) {
+      submitButton.disabled = false;
+    }
+  }
 });
 
 attachFilesButton.addEventListener("click", () => {
@@ -2742,13 +3167,22 @@ messageList.addEventListener("contextmenu", event => {
 
   const roomMessages = state.messagesByRoom.get(room.id) || [];
   const targetMessage = roomMessages.find(message => String(message.id) === messageId);
-  if (!canDeleteMessage(targetMessage)) {
+  const developerMode = Boolean(state.user?.developerMode);
+  const allowDelete = canDeleteMessage(targetMessage);
+  const allowDeveloperCopy = developerMode && Boolean(targetMessage);
+  if (!allowDelete && !allowDeveloperCopy) {
     hideMessageContextMenu();
     return;
   }
 
+  messageContextDeleteButton.classList.toggle("hidden", !allowDelete);
+  messageContextCopyIdButton.classList.toggle("hidden", !allowDeveloperCopy);
+  messageContextCopyTimestampButton.classList.toggle("hidden", !allowDeveloperCopy);
+  messageContextTargetTimestamp = String(targetMessage?.createdAt || "");
+
   event.preventDefault();
   hideMemberContextMenu();
+  hideRoomContextMenu();
   showMessageContextMenu({
     x: event.clientX,
     y: event.clientY,
@@ -2787,6 +3221,48 @@ messageContextDeleteButton.addEventListener("click", async () => {
     notify(error.message || "Unable to delete message");
   } finally {
     messageContextDeleteButton.disabled = false;
+    hideMessageContextMenu();
+  }
+});
+
+messageContextCopyIdButton.addEventListener("click", async () => {
+  const messageId = String(messageContextTargetMessageId || "").trim();
+  if (!messageId) {
+    hideMessageContextMenu();
+    return;
+  }
+
+  try {
+    const copied = await copyText(messageId);
+    if (!copied) {
+      notify("Unable to copy message ID");
+      return;
+    }
+    notify("Message ID copied");
+  } catch (error) {
+    notify("Unable to copy message ID");
+  } finally {
+    hideMessageContextMenu();
+  }
+});
+
+messageContextCopyTimestampButton.addEventListener("click", async () => {
+  const timestamp = String(messageContextTargetTimestamp || "").trim();
+  if (!timestamp) {
+    hideMessageContextMenu();
+    return;
+  }
+
+  try {
+    const copied = await copyText(timestamp);
+    if (!copied) {
+      notify("Unable to copy timestamp");
+      return;
+    }
+    notify("Timestamp copied");
+  } catch (error) {
+    notify("Unable to copy timestamp");
+  } finally {
     hideMessageContextMenu();
   }
 });
@@ -2863,7 +3339,7 @@ discoveryRoomList.addEventListener("click", async event => {
     closeRoomModal({ force: true });
 
     if (result.status === "pending") {
-      notify("Join request sent. Waiting for owner approval.");
+      notify(result.message || "Join request sent. Waiting for owner approval.");
     }
   } catch (error) {
     notify(error.message);
@@ -2946,6 +3422,10 @@ document.addEventListener("click", event => {
     hideMessageContextMenu();
   }
 
+  if (!event.target.closest("#room-context-menu")) {
+    hideRoomContextMenu();
+  }
+
   if (!event.target.closest(".chat-actions-menu-wrap")) {
     closeChatActionsMenu();
   }
@@ -2963,6 +3443,11 @@ window.addEventListener("keydown", event => {
       return;
     }
 
+    if (!appsModal.classList.contains("hidden")) {
+      closeAppsModal();
+      return;
+    }
+
     if (!settingsModal.classList.contains("hidden")) {
       closeSettingsModal();
       return;
@@ -2970,6 +3455,7 @@ window.addEventListener("keydown", event => {
 
     hideMemberContextMenu();
     hideMessageContextMenu();
+    hideRoomContextMenu();
     closeRoomModal();
   }
 });
@@ -2977,6 +3463,7 @@ window.addEventListener("keydown", event => {
 window.addEventListener("resize", () => {
   hideMemberContextMenu();
   hideMessageContextMenu();
+  hideRoomContextMenu();
   closeChatActionsMenu();
   if (!isMobileLayout()) {
     closeMobileDrawer();
@@ -3010,6 +3497,7 @@ window.addEventListener(
   () => {
     hideMemberContextMenu();
     hideMessageContextMenu();
+    hideRoomContextMenu();
     closeChatActionsMenu();
   },
   true
@@ -3032,6 +3520,29 @@ roomList.addEventListener("click", event => {
   }
 
   selectActiveRoom(roomId);
+});
+
+roomList.addEventListener("contextmenu", event => {
+  const target = event.target.closest("[data-room-id]");
+  if (!target || !state.user?.developerMode) {
+    hideRoomContextMenu();
+    return;
+  }
+
+  const roomId = String(target.getAttribute("data-room-id") || "").trim();
+  if (!roomId) {
+    hideRoomContextMenu();
+    return;
+  }
+
+  event.preventDefault();
+  hideMemberContextMenu();
+  hideMessageContextMenu();
+  showRoomContextMenu({
+    x: event.clientX,
+    y: event.clientY,
+    roomId
+  });
 });
 
 roomList.addEventListener("dragstart", event => {
@@ -3113,24 +3624,78 @@ memberList.addEventListener("contextmenu", event => {
   }
 
   const room = getActiveRoom();
-  if (!room || !activeRoomIsOwner() || !roomCanChat(room)) {
+  if (!room || !roomCanChat(room)) {
     hideMemberContextMenu();
     return;
   }
 
   const targetUserId = String(row.getAttribute("data-member-user-id") || "");
-  if (!targetUserId || targetUserId === room.ownerUserId) {
+  if (!targetUserId) {
     hideMemberContextMenu();
     return;
   }
 
+  const canModerate = activeRoomIsOwner() && targetUserId !== room.ownerUserId;
+  const allowDeveloperCopy = Boolean(state.user?.developerMode);
+  if (!canModerate && !allowDeveloperCopy) {
+    hideMemberContextMenu();
+    return;
+  }
+
+  memberContextTransferButton.classList.toggle("hidden", !canModerate);
+  memberContextKickButton.classList.toggle("hidden", !canModerate);
+  memberContextCopyIdButton.classList.toggle("hidden", !allowDeveloperCopy);
+
   event.preventDefault();
   hideMessageContextMenu();
+  hideRoomContextMenu();
   showMemberContextMenu({
     x: event.clientX,
     y: event.clientY,
     userId: targetUserId
   });
+});
+
+roomContextCopyIdButton.addEventListener("click", async () => {
+  const roomId = String(roomContextTargetRoomId || "").trim();
+  if (!roomId) {
+    hideRoomContextMenu();
+    return;
+  }
+
+  try {
+    const copied = await copyText(roomId);
+    if (!copied) {
+      notify("Unable to copy room ID");
+      return;
+    }
+    notify("Room ID copied");
+  } catch (error) {
+    notify("Unable to copy room ID");
+  } finally {
+    hideRoomContextMenu();
+  }
+});
+
+memberContextCopyIdButton.addEventListener("click", async () => {
+  const userId = String(memberContextTargetUserId || "").trim();
+  if (!userId) {
+    hideMemberContextMenu();
+    return;
+  }
+
+  try {
+    const copied = await copyText(userId);
+    if (!copied) {
+      notify("Unable to copy user ID");
+      return;
+    }
+    notify("User ID copied");
+  } catch (error) {
+    notify("Unable to copy user ID");
+  } finally {
+    hideMemberContextMenu();
+  }
 });
 
 memberContextKickButton.addEventListener("click", async () => {
@@ -3279,6 +3844,37 @@ displayNameForm.addEventListener("submit", async event => {
   }
 });
 
+developerModeToggle.addEventListener("change", async () => {
+  if (!state.user) {
+    developerModeToggle.checked = false;
+    return;
+  }
+
+  const enabled = Boolean(developerModeToggle.checked);
+  developerModeToggle.disabled = true;
+  try {
+    const result = await request("/api/me/developer-mode", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled })
+    });
+    state.user = result.user;
+    renderDeveloperModeSettings();
+    if (enabled) {
+      void loadBotApps({ showErrors: false });
+    } else {
+      state.botApps = [];
+      state.botTokensById = new Map();
+      renderBotApps();
+    }
+    notify(enabled ? "Developer Mode enabled" : "Developer Mode disabled");
+  } catch (error) {
+    developerModeToggle.checked = Boolean(state.user?.developerMode);
+    notify(error.message || "Unable to update Developer Mode");
+  } finally {
+    developerModeToggle.disabled = false;
+  }
+});
+
 createRoomForm.addEventListener("submit", async event => {
   event.preventDefault();
 
@@ -3326,7 +3922,7 @@ joinRoomForm.addEventListener("submit", async event => {
     closeRoomModal({ force: true });
 
     if (result.status === "pending") {
-      notify("Join request sent. Waiting for owner approval.");
+      notify(result.message || "Join request sent. Waiting for owner approval.");
     }
   } catch (error) {
     if (error.status === 202) {

@@ -78,6 +78,7 @@
 
         <section class="room-actions">
           <button id="open-room-modal" class="secondary-button">Create / Join Room</button>
+          <button id="open-apps-modal" class="secondary-button hidden">Manage Apps</button>
           <p class="room-actions__hint">Private rooms require owner approval.</p>
         </section>
 
@@ -258,6 +259,15 @@
           </form>
 
           <section class="settings-card">
+            <h3>Developer Mode</h3>
+            <p class="settings-note">Show right-click tools for copying IDs and timestamps.</p>
+            <label class="checkbox-row" for="developer-mode-toggle">
+              <input id="developer-mode-toggle" name="developerMode" type="checkbox" />
+              <span>Enable Developer Mode</span>
+            </label>
+          </section>
+
+          <section class="settings-card">
             <h3>Manage Rooms</h3>
             <p class="settings-note">Leave rooms you joined or delete rooms you own.</p>
             <div id="settings-room-list" class="settings-room-list"></div>
@@ -321,13 +331,62 @@
       </section>
     </div>
 
+    <div id="apps-modal" class="room-modal hidden" aria-hidden="true">
+      <div id="apps-modal-backdrop" class="room-modal__backdrop"></div>
+      <section class="room-modal__panel settings-modal__panel" role="dialog" aria-modal="true" aria-labelledby="apps-modal-title">
+        <header class="room-modal__header">
+          <h2 id="apps-modal-title">Manage Apps</h2>
+          <button id="apps-modal-close" class="modal-close" type="button" aria-label="Close app manager">×</button>
+        </header>
+
+        <p class="room-modal__subtitle">Create and manage bot identities. Tokens are shown only on create/regenerate.</p>
+
+        <section class="settings-card">
+          <h3>Create Bot</h3>
+          <form id="create-bot-app-form" class="stack-form" autocomplete="off">
+            <div class="inline-field">
+              <input
+                id="create-bot-app-name"
+                name="displayName"
+                placeholder="Support Bot"
+                maxlength="32"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                required
+              />
+              <button type="submit" class="primary-button">Create Bot</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="settings-card">
+          <h3>Bot Apps</h3>
+          <div id="bot-app-list" class="bot-app-list"></div>
+        </section>
+      </section>
+    </div>
+
     <div id="toast" class="toast hidden"></div>
     <div id="member-context-menu" class="member-context-menu hidden" role="menu" aria-hidden="true">
+      <button id="member-context-copy-id" class="member-context-menu__item hidden" type="button" role="menuitem">
+        Copy User ID
+      </button>
       <button id="member-context-transfer" class="member-context-menu__item" type="button" role="menuitem">Transfer Ownership</button>
       <button id="member-context-kick" class="member-context-menu__item" type="button" role="menuitem">Kick</button>
     </div>
     <div id="message-context-menu" class="member-context-menu hidden" role="menu" aria-hidden="true">
+      <button id="message-context-copy-id" class="member-context-menu__item hidden" type="button" role="menuitem">
+        Copy Message ID
+      </button>
+      <button id="message-context-copy-timestamp" class="member-context-menu__item hidden" type="button" role="menuitem">
+        Copy Timestamp
+      </button>
       <button id="message-context-delete" class="member-context-menu__item" type="button" role="menuitem">Delete Message</button>
+    </div>
+    <div id="room-context-menu" class="member-context-menu hidden" role="menu" aria-hidden="true">
+      <button id="room-context-copy-id" class="member-context-menu__item" type="button" role="menuitem">Copy Room ID</button>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>

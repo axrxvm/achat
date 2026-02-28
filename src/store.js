@@ -141,6 +141,8 @@ const LEGACY_ACCOUNT_HASH_WORD_COUNT_MAX = 10;
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 128;
 const PASSWORD_HASH_REGEX = /^[a-f0-9]{32}:[a-f0-9]{128}$/;
+const BOT_TOKEN_PREFIX = "achat_bot_";
+const BOT_TOKEN_SECRET_BYTES = 24;
 
 const EMPTY_STORE = {
   users: [],
@@ -259,6 +261,18 @@ const hashPassword = password => {
   return `${saltHex}:${derivedHex}`;
 };
 
+const hashBotAuthToken = token => {
+  return crypto
+    .createHash("sha256")
+    .update(String(token || ""))
+    .digest("hex");
+};
+
+const buildBotAuthToken = botUserId => {
+  const secret = crypto.randomBytes(BOT_TOKEN_SECRET_BYTES).toString("hex");
+  return `${BOT_TOKEN_PREFIX}${String(botUserId)}.${secret}`;
+};
+
 const verifyPasswordHash = ({ password, passwordHash }) => {
   const normalizedHash = String(passwordHash || "").trim().toLowerCase();
   if (!PASSWORD_HASH_REGEX.test(normalizedHash)) {
@@ -353,6 +367,16 @@ const normalizeStore = value => {
     user.id = String(user.id || "");
     user.displayName = sanitizeDisplayName(user.displayName);
     user.displayNameCustom = Boolean(user.displayNameCustom);
+    user.isBot = Boolean(user.isBot);
+    user.botOwnerUserId = user.botOwnerUserId ? String(user.botOwnerUserId) : null;
+    user.botTokenHash = String(user.botTokenHash || "")
+      .trim()
+      .toLowerCase();
+    if (!ACCOUNT_HASH_DIGEST_REGEX.test(user.botTokenHash)) {
+      user.botTokenHash = "";
+    }
+    user.botTokenUpdatedAt = user.botTokenUpdatedAt ? String(user.botTokenUpdatedAt) : null;
+    user.developerMode = user.isBot ? false : Boolean(user.developerMode);
     user.oauthKey = String(user.oauthKey || "");
     user.oauthSub = String(user.oauthSub || "");
     user.oauthProvider = String(user.oauthProvider || "oauth")
@@ -371,6 +395,36 @@ const normalizeStore = value => {
     user.accountHashUpdatedAt = user.accountHashUpdatedAt ? String(user.accountHashUpdatedAt) : null;
     user.createdAt = user.createdAt || nowIso();
     user.lastLoginAt = user.lastLoginAt || user.createdAt;
+
+    if (!user.isBot) {
+      user.botOwnerUserId = null;
+      user.botTokenHash = "";
+      user.botTokenUpdatedAt = null;
+    } else {
+      if (!user.botOwnerUserId) {
+        user.botOwnerUserId = null;
+      }
+
+      if (!user.oauthKey) {
+        user.oauthKey = `bot:${user.id}`;
+      }
+      if (!user.oauthSub) {
+        user.oauthSub = `bot:${user.id}`;
+      }
+      if (!user.oauthProvider) {
+        user.oauthProvider = "bot";
+      }
+      if (!user.oauthProviderId) {
+        user.oauthProviderId = user.id;
+      }
+
+      user.oauthEmail = null;
+      user.passwordHash = "";
+      user.passwordLoginEmail = "";
+      user.passwordUpdatedAt = null;
+      user.accountHashDigest = "";
+      user.accountHashUpdatedAt = null;
+    }
   }
 
   const usedMessageIds = new Set();
@@ -469,6 +523,8 @@ const ensureMongoConnections = async () => {
     mongoCollections.users.createIndex({ oauthKey: 1 }),
     mongoCollections.users.createIndex({ accountHashDigest: 1 }),
     mongoCollections.users.createIndex({ passwordLoginEmail: 1 }),
+    mongoCollections.users.createIndex({ isBot: 1, botOwnerUserId: 1 }),
+    mongoCollections.users.createIndex({ botTokenHash: 1 }),
     mongoCollections.rooms.createIndex({ ownerUserId: 1 }),
     mongoCollections.sessions.createIndex({ userId: 1 }),
     mongoCollections.messages.createIndex({ roomId: 1, createdAt: 1 }),
@@ -697,12 +753,17 @@ const ensureDeletedUser = () => {
     oauthEmail: null,
     displayName: "Deleted User",
     displayNameCustom: false,
+    developerMode: false,
     avatarUrl: null,
     passwordHash: "",
     passwordLoginEmail: "",
     passwordUpdatedAt: null,
     accountHashDigest: "",
     accountHashUpdatedAt: null,
+    isBot: false,
+    botOwnerUserId: null,
+    botTokenHash: "",
+    botTokenUpdatedAt: null,
     createdAt: nowIso(),
     lastLoginAt: nowIso()
   };
@@ -718,6 +779,7 @@ const formatMessageForClient = message => {
     roomId: message.roomId,
     userId: message.userId,
     username: author?.displayName || "Deleted User",
+    userIsBot: Boolean(author?.isBot),
     avatarUrl: author?.avatarUrl || null,
     text: message.text,
     createdAt: message.createdAt
@@ -798,12 +860,17 @@ const upsertOAuthUser = async profile => {
       oauthEmail,
       displayName,
       displayNameCustom: false,
+      developerMode: false,
       avatarUrl,
       passwordHash: "",
       passwordLoginEmail: "",
       passwordUpdatedAt: null,
       accountHashDigest: "",
       accountHashUpdatedAt: null,
+      isBot: false,
+      botOwnerUserId: null,
+      botTokenHash: "",
+      botTokenUpdatedAt: null,
       createdAt: nowIso(),
       lastLoginAt: nowIso()
     };
@@ -826,6 +893,7 @@ const upsertOAuthUser = async profile => {
       user.displayNameCustom = true;
     }
 
+    user.developerMode = Boolean(user.developerMode);
     user.avatarUrl = avatarUrl || user.avatarUrl || null;
     normalizeUserPasswordFields(user);
     user.accountHashDigest = String(user.accountHashDigest || "")
@@ -835,6 +903,10 @@ const upsertOAuthUser = async profile => {
       user.accountHashDigest = "";
     }
     user.accountHashUpdatedAt = user.accountHashUpdatedAt ? String(user.accountHashUpdatedAt) : null;
+    user.isBot = false;
+    user.botOwnerUserId = null;
+    user.botTokenHash = "";
+    user.botTokenUpdatedAt = null;
     user.lastLoginAt = nowIso();
   }
 
@@ -842,10 +914,157 @@ const upsertOAuthUser = async profile => {
   return clone(user);
 };
 
+const requireHumanDeveloperUser = userId => {
+  const user = findUserById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  if (user.isBot) {
+    throw new Error("Bot users cannot manage bot applications");
+  }
+
+  if (!user.developerMode) {
+    throw new Error("Developer Mode must be enabled to manage bot applications");
+  }
+
+  return user;
+};
+
+const requireOwnedBotUser = ({ ownerUserId, botUserId }) => {
+  const botUser = findUserById(botUserId);
+  if (!botUser || !botUser.isBot) {
+    throw new Error("Bot not found");
+  }
+
+  if (String(botUser.botOwnerUserId || "") !== String(ownerUserId || "")) {
+    throw new Error("You do not own this bot");
+  }
+
+  return botUser;
+};
+
+const listBotsForOwner = ({ ownerUserId }) => {
+  const owner = requireHumanDeveloperUser(ownerUserId);
+  return state.users
+    .filter(user => user.isBot && String(user.botOwnerUserId || "") === String(owner.id))
+    .sort((left, right) => toTimestamp(right.createdAt) - toTimestamp(left.createdAt))
+    .map(user => getUserById(user.id))
+    .filter(Boolean);
+};
+
+const createBotForOwner = async ({ ownerUserId, displayName }) => {
+  const owner = requireHumanDeveloperUser(ownerUserId);
+  const id = generateUniqueNumericId(7, new Set(state.users.map(entry => entry.id)));
+  const botDisplayName = sanitizeDisplayName(displayName || "New Bot");
+  const authToken = buildBotAuthToken(id);
+
+  const botUser = {
+    id,
+    oauthKey: `bot:${id}`,
+    oauthSub: `bot:${id}`,
+    oauthProvider: "bot",
+    oauthProviderId: id,
+    oauthEmail: null,
+    displayName: botDisplayName,
+    displayNameCustom: true,
+    developerMode: false,
+    avatarUrl: null,
+    passwordHash: "",
+    passwordLoginEmail: "",
+    passwordUpdatedAt: null,
+    accountHashDigest: "",
+    accountHashUpdatedAt: null,
+    isBot: true,
+    botOwnerUserId: owner.id,
+    botTokenHash: hashBotAuthToken(authToken),
+    botTokenUpdatedAt: nowIso(),
+    createdAt: nowIso(),
+    lastLoginAt: nowIso()
+  };
+
+  state.users.push(botUser);
+  await persistUser(botUser);
+
+  return {
+    bot: getUserById(botUser.id),
+    authToken
+  };
+};
+
+const updateBotDisplayNameForOwner = async ({ ownerUserId, botUserId, displayName }) => {
+  requireHumanDeveloperUser(ownerUserId);
+  const botUser = requireOwnedBotUser({ ownerUserId, botUserId });
+  botUser.displayName = sanitizeDisplayName(displayName || "");
+  botUser.displayNameCustom = true;
+  await persistUser(botUser);
+  return getUserById(botUser.id);
+};
+
+const regenerateBotTokenForOwner = async ({ ownerUserId, botUserId }) => {
+  requireHumanDeveloperUser(ownerUserId);
+  const botUser = requireOwnedBotUser({ ownerUserId, botUserId });
+  const authToken = buildBotAuthToken(botUser.id);
+  botUser.botTokenHash = hashBotAuthToken(authToken);
+  botUser.botTokenUpdatedAt = nowIso();
+  await persistUser(botUser);
+  return {
+    bot: getUserById(botUser.id),
+    authToken
+  };
+};
+
+const authenticateBotToken = async authToken => {
+  const rawToken = String(authToken || "").trim();
+  if (!rawToken || !rawToken.startsWith(BOT_TOKEN_PREFIX)) {
+    return null;
+  }
+
+  const tokenPayload = rawToken.slice(BOT_TOKEN_PREFIX.length);
+  const separatorIndex = tokenPayload.indexOf(".");
+  if (separatorIndex <= 0) {
+    return null;
+  }
+
+  const botUserId = tokenPayload.slice(0, separatorIndex);
+  const tokenSecret = tokenPayload.slice(separatorIndex + 1);
+  if (!botUserId || !tokenSecret) {
+    return null;
+  }
+
+  const botUser = findUserById(botUserId);
+  if (!botUser || !botUser.isBot) {
+    return null;
+  }
+
+  const storedHash = String(botUser.botTokenHash || "")
+    .trim()
+    .toLowerCase();
+  if (!ACCOUNT_HASH_DIGEST_REGEX.test(storedHash)) {
+    return null;
+  }
+
+  const expectedBuffer = Buffer.from(storedHash, "hex");
+  const actualBuffer = Buffer.from(hashBotAuthToken(rawToken), "hex");
+  if (expectedBuffer.length !== actualBuffer.length) {
+    return null;
+  }
+
+  if (!crypto.timingSafeEqual(expectedBuffer, actualBuffer)) {
+    return null;
+  }
+
+  return getUserById(botUser.id);
+};
+
 const setUserPasswordLogin = async ({ userId, password, currentPassword = "" }) => {
   const user = findUserById(userId);
   if (!user) {
     throw new Error("User not found");
+  }
+
+  if (user.isBot) {
+    throw new Error("Bot users cannot use password login");
   }
 
   const normalizedPassword = String(password || "");
@@ -897,6 +1116,10 @@ const disableUserPasswordLogin = async ({ userId, currentPassword = "" }) => {
     throw new Error("User not found");
   }
 
+  if (user.isBot) {
+    throw new Error("Bot users cannot use password login");
+  }
+
   if (!user.passwordHash) {
     throw new Error("Password login is not enabled");
   }
@@ -930,6 +1153,7 @@ const authenticateUserByPassword = async ({ email, password }) => {
 
   const user = state.users.find(entry => {
     return (
+      !entry.isBot &&
       Boolean(String(entry.passwordHash || "")) &&
       normalizeEmail(entry.passwordLoginEmail || "") === normalizedEmail
     );
@@ -955,6 +1179,10 @@ const generateAccountHashForUser = async ({ userId }) => {
   const user = findUserById(userId);
   if (!user) {
     throw new Error("User not found");
+  }
+
+  if (user.isBot) {
+    throw new Error("Bot users cannot use account hash login");
   }
 
   const existingDigests = new Set(state.users.map(entry => String(entry.accountHashDigest || "")).filter(Boolean));
@@ -992,7 +1220,7 @@ const authenticateUserByAccountHash = async accountHash => {
   }
 
   const digest = hashNormalizedAccountHash(normalized);
-  const user = state.users.find(entry => String(entry.accountHashDigest || "") === digest);
+  const user = state.users.find(entry => !entry.isBot && String(entry.accountHashDigest || "") === digest);
   if (!user) {
     return null;
   }
@@ -1006,6 +1234,10 @@ const disableUserAccountHashLogin = async ({ userId }) => {
   const user = findUserById(userId);
   if (!user) {
     throw new Error("User not found");
+  }
+
+  if (user.isBot) {
+    throw new Error("Bot users cannot use account hash login");
   }
 
   user.accountHashDigest = "";
@@ -1054,8 +1286,13 @@ const createRoom = async ({ name, ownerUserId, isPrivate = false, isDiscoverable
   }
 
   const ownerId = String(ownerUserId);
-  if (!findUserById(ownerId)) {
+  const ownerUser = findUserById(ownerId);
+  if (!ownerUser) {
     throw new Error("Owner user does not exist");
+  }
+
+  if (ownerUser.isBot) {
+    throw new Error("Bots cannot create rooms");
   }
 
   const id = generateUniqueNumericId(4, new Set(state.rooms.map(room => room.id)));
@@ -1097,12 +1334,13 @@ const getRoomAccessForUser = (roomId, userId) => {
 const joinRoom = async ({ roomId, userId }) => {
   const room = findRoomById(roomId);
   const normalizedUserId = String(userId);
+  const joiningUser = findUserById(normalizedUserId);
 
   if (!room) {
     throw new Error("Room not found");
   }
 
-  if (!findUserById(normalizedUserId)) {
+  if (!joiningUser) {
     throw new Error("User not found");
   }
 
@@ -1110,7 +1348,7 @@ const joinRoom = async ({ roomId, userId }) => {
     return { room: clone(room), status: "member" };
   }
 
-  if (room.isPrivate) {
+  if (room.isPrivate || joiningUser.isBot) {
     if (!room.pendingUserIds.includes(normalizedUserId)) {
       room.pendingUserIds.push(normalizedUserId);
       touchRoom(room);
@@ -1174,6 +1412,15 @@ const transferRoomOwnership = async ({ roomId, ownerUserId, targetUserId }) => {
 
   if (!room.memberUserIds.includes(normalizedTargetId)) {
     throw new Error("Target user must be an approved room member");
+  }
+
+  const targetUser = findUserById(normalizedTargetId);
+  if (!targetUser) {
+    throw new Error("Target user not found");
+  }
+
+  if (targetUser.isBot) {
+    throw new Error("Bots cannot own rooms");
   }
 
   room.ownerUserId = normalizedTargetId;
@@ -1291,6 +1538,16 @@ const deleteUserAccount = async ({ userId }) => {
   return {
     affectedRoomIds: [...affectedRoomIds],
     affectedUserIds: [...affectedUserIds]
+  };
+};
+
+const deleteBotForOwner = async ({ ownerUserId, botUserId }) => {
+  requireHumanDeveloperUser(ownerUserId);
+  const botUser = requireOwnedBotUser({ ownerUserId, botUserId });
+  const deletionResult = await deleteUserAccount({ userId: botUser.id });
+  return {
+    botUserId: botUser.id,
+    ...deletionResult
   };
 };
 
@@ -1546,7 +1803,8 @@ const getRoomMembers = roomId => {
     .map(user => ({
       id: user.id,
       displayName: user.displayName,
-      avatarUrl: user.avatarUrl
+      avatarUrl: user.avatarUrl,
+      isBot: Boolean(user.isBot)
     }));
 };
 
@@ -1562,7 +1820,8 @@ const getRoomPendingUsers = roomId => {
     .map(user => ({
       id: user.id,
       displayName: user.displayName,
-      avatarUrl: user.avatarUrl
+      avatarUrl: user.avatarUrl,
+      isBot: Boolean(user.isBot)
     }));
 };
 
@@ -1618,6 +1877,7 @@ const listRoomsForUser = userId => {
         latestMessage: latestMessage
           ? {
               username: latestMessageAuthor?.displayName || "Unknown",
+              userIsBot: Boolean(latestMessageAuthor?.isBot),
               text: latestMessage.text,
               createdAt: latestMessage.createdAt
             }
@@ -1668,14 +1928,18 @@ const getUserById = userId => {
   return {
     id: user.id,
     displayName: user.displayName,
+    developerMode: user.isBot ? false : Boolean(user.developerMode),
     avatarUrl: user.avatarUrl,
     oauthProvider: user.oauthProvider,
-    email: user.oauthEmail || null,
-    hasPasswordLogin: Boolean(user.passwordHash),
-    passwordLoginEmail: user.passwordLoginEmail || null,
-    passwordUpdatedAt: user.passwordUpdatedAt || null,
-    hasAccountHash: Boolean(user.accountHashDigest),
-    accountHashUpdatedAt: user.accountHashUpdatedAt || null,
+    email: user.isBot ? null : user.oauthEmail || null,
+    hasPasswordLogin: user.isBot ? false : Boolean(user.passwordHash),
+    passwordLoginEmail: user.isBot ? null : user.passwordLoginEmail || null,
+    passwordUpdatedAt: user.isBot ? null : user.passwordUpdatedAt || null,
+    hasAccountHash: user.isBot ? false : Boolean(user.accountHashDigest),
+    accountHashUpdatedAt: user.isBot ? null : user.accountHashUpdatedAt || null,
+    isBot: Boolean(user.isBot),
+    botOwnerUserId: user.isBot ? user.botOwnerUserId || null : null,
+    botTokenUpdatedAt: user.isBot ? user.botTokenUpdatedAt || null : null,
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt
   };
@@ -1687,8 +1951,27 @@ const updateUserDisplayName = async ({ userId, displayName }) => {
     throw new Error("User not found");
   }
 
+  if (user.isBot) {
+    throw new Error("Bot display names must be managed via bot app APIs");
+  }
+
   user.displayName = sanitizeDisplayName(displayName);
   user.displayNameCustom = true;
+  await persistUser(user);
+  return getUserById(user.id);
+};
+
+const updateUserDeveloperMode = async ({ userId, enabled }) => {
+  const user = findUserById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  if (user.isBot) {
+    throw new Error("Bots cannot enable developer mode");
+  }
+
+  user.developerMode = Boolean(enabled);
   await persistUser(user);
   return getUserById(user.id);
 };
@@ -1715,13 +1998,92 @@ const getRoomById = roomId => {
   return room ? clone(room) : null;
 };
 
+const getLimitedUserInfoById = userId => {
+  const user = findUserById(userId);
+  if (!user) {
+    return null;
+  }
+
+  return {
+    id: user.id,
+    displayName: user.displayName,
+    avatarUrl: user.avatarUrl || null,
+    isBot: Boolean(user.isBot),
+    createdAt: user.createdAt,
+    lastLoginAt: user.lastLoginAt
+  };
+};
+
+const getLimitedRoomInfoForUser = ({ roomId, userId }) => {
+  const room = findRoomById(roomId);
+  if (!room) {
+    throw new Error("Room not found");
+  }
+
+  const accessStatus = getRoomAccessForUser(room.id, userId);
+  if (accessStatus !== "member") {
+    throw new Error("You do not have access to this room");
+  }
+
+  const owner = findUserById(room.ownerUserId);
+  return {
+    id: room.id,
+    name: room.name,
+    isPrivate: Boolean(room.isPrivate),
+    isDiscoverable: room.isDiscoverable !== false,
+    ownerUserId: room.ownerUserId,
+    ownerDisplayName: owner?.displayName || "Unknown",
+    memberCount: room.memberUserIds.length,
+    pendingCount: room.pendingUserIds.length,
+    createdAt: room.createdAt,
+    updatedAt: room.updatedAt
+  };
+};
+
+const getLimitedUserInfoInRoomForUser = ({ requesterUserId, targetUserId, roomId }) => {
+  const room = findRoomById(roomId);
+  if (!room) {
+    throw new Error("Room not found");
+  }
+
+  const requesterAccess = getRoomAccessForUser(room.id, requesterUserId);
+  if (requesterAccess !== "member") {
+    throw new Error("You do not have access to this room");
+  }
+
+  const target = findUserById(targetUserId);
+  if (!target) {
+    throw new Error("User not found");
+  }
+
+  let roomStatus = "none";
+  if (room.memberUserIds.includes(String(target.id))) {
+    roomStatus = "member";
+  } else if (room.pendingUserIds.includes(String(target.id))) {
+    roomStatus = "pending";
+  }
+
+  if (roomStatus === "none") {
+    throw new Error("User is not part of this room");
+  }
+
+  return {
+    ...getLimitedUserInfoById(target.id),
+    roomId: room.id,
+    roomStatus
+  };
+};
+
 module.exports = {
   addMessage,
+  authenticateBotToken,
   authenticateUserByAccountHash,
   authenticateUserByPassword,
   approvePendingUser,
+  createBotForOwner,
   createRoom,
   createSession,
+  deleteBotForOwner,
   deleteMessage,
   deleteRoom,
   deleteSession,
@@ -1738,17 +2100,24 @@ module.exports = {
   getRoomPendingUsers,
   getRoomUserIds,
   getSessionUser,
+  getLimitedRoomInfoForUser,
+  getLimitedUserInfoById,
+  getLimitedUserInfoInRoomForUser,
   kickMember,
   joinRoom,
   leaveRoom,
+  listBotsForOwner,
   listDiscoverableRoomsForUser,
   listRoomsForUser,
+  regenerateBotTokenForOwner,
   rejectPendingUser,
   transferRoomOwnership,
   setRoomDiscoverability,
   setRoomPrivacy,
   setUserPasswordLogin,
   touchSession,
+  updateBotDisplayNameForOwner,
+  updateUserDeveloperMode,
   updateUserDisplayName,
   upsertOAuthUser
 };

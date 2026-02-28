@@ -32,7 +32,8 @@ const requireAuth = createRequireAuth({
   parseCookies,
   getSessionUser: store.getSessionUser,
   touchSession: store.touchSession,
-  clearSessionCookie: res => clearSessionCookie(res, config.SESSION_COOKIE)
+  clearSessionCookie: res => clearSessionCookie(res, config.SESSION_COOKIE),
+  authenticateBotToken: store.authenticateBotToken
 });
 
 const realtime = setupRealtime({
@@ -41,6 +42,7 @@ const realtime = setupRealtime({
   parseCookies,
   getSessionUser: store.getSessionUser,
   touchSession: store.touchSession,
+  authenticateBotToken: store.authenticateBotToken,
   listRoomsForUser: store.listRoomsForUser,
   getRoomUserIds: store.getRoomUserIds,
   getRoomById: store.getRoomById,

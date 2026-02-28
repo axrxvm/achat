@@ -4,6 +4,7 @@ const setupRealtime = ({
   parseCookies,
   getSessionUser,
   touchSession,
+  authenticateBotToken,
   listRoomsForUser,
   getRoomUserIds,
   getRoomById,
@@ -15,9 +16,40 @@ const setupRealtime = ({
 }) => {
   const ROOM_HISTORY_LIMIT = 80;
   const ROOMS_UPDATE_BATCH_DELAY_MS = 140;
-  const onlineCounts = new Map();
   const socketsByUser = new Map();
   const pendingRoomUpdateTimers = new Map();
+  const parseBearerToken = value => {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    const match = raw.match(/^Bearer\s+(.+)$/i);
+    return match ? String(match[1] || "").trim() : "";
+  };
+  const getBotTokenFromSocketHandshake = socket => {
+    const headerToken = parseBearerToken(socket?.handshake?.headers?.authorization);
+    if (headerToken) {
+      return headerToken;
+    }
+
+    const authToken = String(socket?.handshake?.auth?.token || socket?.handshake?.auth?.botToken || "").trim();
+    if (authToken) {
+      return authToken;
+    }
+
+    const queryToken = String(socket?.handshake?.query?.token || socket?.handshake?.query?.botToken || "").trim();
+    if (queryToken) {
+      return queryToken;
+    }
+
+    const queryBearerToken = parseBearerToken(socket?.handshake?.query?.authorization);
+    if (queryBearerToken) {
+      return queryBearerToken;
+    }
+
+    return "";
+  };
   const getSocketById = socketId => {
     if (io?.sockets?.connected && io.sockets.connected[socketId]) {
       return io.sockets.connected[socketId];
@@ -36,25 +68,66 @@ const setupRealtime = ({
       isOwner: room.ownerUserId === String(userId)
     }));
 
-  const isUserOnline = userId => (onlineCounts.get(String(userId)) || 0) > 0;
+  const getConnectedSocketsForUser = userId => {
+    const normalizedUserId = String(userId || "");
+    if (!normalizedUserId) {
+      return [];
+    }
+
+    const socketIds = socketsByUser.get(normalizedUserId);
+    if (!socketIds || socketIds.size === 0) {
+      return [];
+    }
+
+    const connectedSockets = [];
+    const staleIds = [];
+    for (const socketId of socketIds) {
+      const socket = getSocketById(socketId);
+      if (socket && socket.connected) {
+        connectedSockets.push(socket);
+      } else {
+        staleIds.push(socketId);
+      }
+    }
+
+    if (staleIds.length > 0) {
+      for (const socketId of staleIds) {
+        socketIds.delete(socketId);
+      }
+      if (socketIds.size === 0) {
+        socketsByUser.delete(normalizedUserId);
+      }
+    }
+
+    return connectedSockets;
+  };
+  const isUserOnline = userId => getConnectedSocketsForUser(userId).length > 0;
   const getMemberRoomIdsForUser = userId =>
     listRoomsForUser(userId)
       .filter(room => room.accessStatus === "member")
       .map(room => room.id);
   const getPresenceStatusInRoom = (userId, roomId) => {
-    const socketIds = socketsByUser.get(String(userId));
-    if (!socketIds || socketIds.size === 0) {
+    const connectedSockets = getConnectedSocketsForUser(userId);
+    if (connectedSockets.length === 0) {
       return "offline";
     }
 
     let hasFocusedChatSocket = false;
-    for (const socketId of socketIds) {
-      const socket = getSocketById(socketId);
-      if (!socket || !socket.connected) {
+    for (const socket of connectedSockets) {
+      if (socket.user?.isBot) {
+        const botRoomIds = socket.botActiveRoomIds instanceof Set ? socket.botActiveRoomIds : new Set();
+        if (botRoomIds.has(String(roomId))) {
+          return "active";
+        }
+
+        if (botRoomIds.size > 0) {
+          hasFocusedChatSocket = true;
+        }
         continue;
       }
 
-      if (!socket.isChatFocused) {
+      const socketCountsAsFocused = Boolean(socket.isChatFocused);
+      if (!socketCountsAsFocused) {
         continue;
       }
 
@@ -214,23 +287,37 @@ const setupRealtime = ({
 
   io.use(async (socket, next) => {
     try {
-      const sessionId = parseCookies(socket.handshake.headers.cookie)[sessionCookie];
-      if (!sessionId) {
-        console.warn("[WARN] Socket auth failed: no session cookie");
+      const sessionId = parseCookies(socket?.handshake?.headers?.cookie || "")[sessionCookie];
+      if (sessionId) {
+        const sessionUser = getSessionUser(sessionId);
+        if (sessionUser) {
+          await touchSession(sessionId);
+          socket.sessionId = sessionId;
+          socket.user = sessionUser.user;
+          socket.authType = "session";
+        }
+      }
+
+      if (!socket.user && typeof authenticateBotToken === "function") {
+        const botToken = getBotTokenFromSocketHandshake(socket);
+        if (botToken) {
+          const botUser = await authenticateBotToken(botToken);
+          if (botUser) {
+            socket.sessionId = null;
+            socket.user = botUser;
+            socket.authType = "bot";
+          }
+        }
+      }
+
+      if (!socket.user) {
+        console.warn("[WARN] Socket auth failed: unauthorized");
         return next(new Error("Unauthorized"));
       }
 
-      const sessionUser = getSessionUser(sessionId);
-      if (!sessionUser) {
-        console.warn("[WARN] Socket auth failed: invalid session");
-        return next(new Error("Unauthorized"));
-      }
-
-      await touchSession(sessionId);
-      socket.sessionId = sessionId;
-      socket.user = sessionUser.user;
       socket.activeRoomId = socket.activeRoomId || null;
-      socket.isChatFocused = false;
+      socket.botActiveRoomIds = socket.botActiveRoomIds instanceof Set ? socket.botActiveRoomIds : new Set();
+      socket.isChatFocused = Boolean(socket.user?.isBot ? socket.botActiveRoomIds.size > 0 : false);
       next();
     } catch (error) {
       console.warn("[WARN] Socket auth failed:", error.message);
@@ -251,50 +338,76 @@ const setupRealtime = ({
     existingSocketIds.add(socket.id);
     socketsByUser.set(userId, existingSocketIds);
 
-    onlineCounts.set(userId, (onlineCounts.get(userId) || 0) + 1);
-
     const rooms = getRoomsPayloadForUser(userId);
     emitPresenceForUserRooms(userId);
 
     socket.emit("rooms:update", rooms);
 
     socket.on("room:join", (payload, callback = () => {}) => {
-      const roomId = String(payload?.roomId || "").trim();
-      const room = getRoomById(roomId);
+      const respond = typeof callback === "function" ? callback : () => {};
 
-      if (!room) {
-        return callback({ error: "Room not found" });
+      try {
+        const roomId = String(payload?.roomId || "").trim();
+        const room = getRoomById(roomId);
+
+        if (!room) {
+          return respond({ error: "Room not found" });
+        }
+
+        if (getRoomAccessForUser(room.id, userId) !== "member") {
+          return respond({ error: "You do not have chat access to this room" });
+        }
+
+        const isBotUser = Boolean(socket.user?.isBot);
+
+        if (!isBotUser && socket.activeRoomId && socket.activeRoomId !== room.id) {
+          emitTypingUpdate({
+            roomId: socket.activeRoomId,
+            userId,
+            displayName: user.displayName,
+            isTyping: false
+          });
+          socket.leave(`room:${socket.activeRoomId}`);
+        }
+
+        socket.activeRoomId = room.id;
+        if (isBotUser) {
+          socket.botActiveRoomIds.add(String(room.id));
+          socket.isChatFocused = socket.botActiveRoomIds.size > 0;
+        }
+        socket.join(`room:${room.id}`);
+
+        respond({ ok: true, roomId: room.id });
+
+        // Ack first so clients do not timeout while history is prepared.
+        try {
+          const historyPage = getMessagesPageForRoom({ roomId: room.id, limit: ROOM_HISTORY_LIMIT });
+          socket.emit("room:history", {
+            roomId: room.id,
+            messages: historyPage.messages,
+            hasMore: historyPage.hasMore
+          });
+        } catch (error) {
+          console.warn("[WARN] Failed to emit room history:", error.message);
+        }
+
+        emitPresenceForUserRooms(userId);
+      } catch (error) {
+        console.warn("[WARN] room:join handler failed:", error.message);
+        respond({ error: "Unable to join room right now" });
       }
-
-      if (getRoomAccessForUser(room.id, userId) !== "member") {
-        return callback({ error: "You do not have chat access to this room" });
-      }
-
-      if (socket.activeRoomId && socket.activeRoomId !== room.id) {
-        emitTypingUpdate({
-          roomId: socket.activeRoomId,
-          userId,
-          displayName: user.displayName,
-          isTyping: false
-        });
-        socket.leave(`room:${socket.activeRoomId}`);
-      }
-
-      socket.activeRoomId = room.id;
-      socket.join(`room:${room.id}`);
-
-      const historyPage = getMessagesPageForRoom({ roomId: room.id, limit: ROOM_HISTORY_LIMIT });
-      socket.emit("room:history", {
-        roomId: room.id,
-        messages: historyPage.messages,
-        hasMore: historyPage.hasMore
-      });
-
-      emitPresenceForUserRooms(userId);
-      callback({ ok: true, roomId: room.id });
     });
 
     socket.on("presence:update", payload => {
+      if (socket.user?.isBot) {
+        const previousFocused = Boolean(socket.isChatFocused);
+        socket.isChatFocused = socket.botActiveRoomIds.size > 0;
+        if (previousFocused !== socket.isChatFocused) {
+          emitPresenceForUserRooms(userId);
+        }
+        return;
+      }
+
       const nextFocused = Boolean(payload?.isFocused);
       const requestedRoomId = String(payload?.activeRoomId || socket.activeRoomId || "").trim();
       const hasValidRequestedRoom =
@@ -322,7 +435,8 @@ const setupRealtime = ({
     });
 
     socket.on("typing:update", payload => {
-      const roomId = String(payload?.roomId || socket.activeRoomId || "").trim();
+      const isBotUser = Boolean(socket.user?.isBot);
+      const roomId = String(payload?.roomId || (isBotUser ? "" : socket.activeRoomId) || "").trim();
       if (!roomId) {
         return;
       }
@@ -340,26 +454,28 @@ const setupRealtime = ({
     });
 
     socket.on("message:send", async (payload, callback = () => {}) => {
-      const roomId = String(payload?.roomId || socket.activeRoomId || "").trim();
+      const respond = typeof callback === "function" ? callback : () => {};
+      const isBotUser = Boolean(socket.user?.isBot);
+      const roomId = String(payload?.roomId || (isBotUser ? "" : socket.activeRoomId) || "").trim();
       const text = String(payload?.text || "");
 
       if (!roomId) {
-        return callback({ error: "roomId is required" });
+        return respond({ error: "roomId is required" });
       }
 
       if (getRoomAccessForUser(roomId, userId) !== "member") {
-        return callback({ error: "You do not have chat access to this room" });
+        return respond({ error: "You do not have chat access to this room" });
       }
 
       try {
         const message = await addMessage({ roomId, userId, text });
         io.to(`room:${roomId}`).emit("message:new", message);
-        callback({ ok: true, message });
+        respond({ ok: true, message });
         setImmediate(() => {
           scheduleRoomsUpdateForRoomUsers(roomId);
         });
       } catch (error) {
-        callback({ error: error.message || "Unable to send message" });
+        respond({ error: error.message || "Unable to send message" });
       }
     });
 
@@ -373,19 +489,23 @@ const setupRealtime = ({
         });
       }
 
+      if (socket.user?.isBot && socket.botActiveRoomIds.size > 0) {
+        for (const botRoomId of socket.botActiveRoomIds) {
+          emitTypingUpdate({
+            roomId: botRoomId,
+            userId,
+            displayName: user.displayName,
+            isTyping: false
+          });
+        }
+      }
+
       const socketIds = socketsByUser.get(userId);
       if (socketIds) {
         socketIds.delete(socket.id);
         if (socketIds.size === 0) {
           socketsByUser.delete(userId);
         }
-      }
-
-      const nextCount = Math.max(0, (onlineCounts.get(userId) || 1) - 1);
-      if (nextCount === 0) {
-        onlineCounts.delete(userId);
-      } else {
-        onlineCounts.set(userId, nextCount);
       }
 
       emitPresenceForUserRooms(userId);
