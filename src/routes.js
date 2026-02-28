@@ -848,7 +848,11 @@ const registerRoutes = ({
         text: String(req.body?.text || "")
       });
 
-      io.to(`room:${snapshot.room.id}`).emit("message:new", message);
+      if (typeof realtime.emitToRoomMemberSockets === "function") {
+        realtime.emitToRoomMemberSockets(snapshot.room.id, "message:new", message);
+      } else {
+        io.to(`room:${snapshot.room.id}`).emit("message:new", message);
+      }
       res.status(201).json({ message });
       setImmediate(() => {
         if (typeof realtime.scheduleRoomsUpdateForRoomUsers === "function") {
@@ -881,7 +885,11 @@ const registerRoutes = ({
         text: String(req.body?.text || "")
       });
 
-      io.to(`room:${snapshot.room.id}`).emit("message:update", { message });
+      if (typeof realtime.emitToRoomMemberSockets === "function") {
+        realtime.emitToRoomMemberSockets(snapshot.room.id, "message:update", { message });
+      } else {
+        io.to(`room:${snapshot.room.id}`).emit("message:update", { message });
+      }
       res.json({ message });
       setImmediate(() => {
         if (typeof realtime.scheduleRoomsUpdateForRoomUsers === "function") {
@@ -920,7 +928,11 @@ const registerRoutes = ({
         requesterUserId: req.user.id
       });
 
-      io.to(`room:${snapshot.room.id}`).emit("message:delete", result);
+      if (typeof realtime.emitToRoomMemberSockets === "function") {
+        realtime.emitToRoomMemberSockets(snapshot.room.id, "message:delete", result);
+      } else {
+        io.to(`room:${snapshot.room.id}`).emit("message:delete", result);
+      }
       res.json({
         ok: true,
         roomId: result.roomId,

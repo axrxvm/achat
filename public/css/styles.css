@@ -593,6 +593,7 @@ textarea:focus-visible {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scroll-behavior: smooth;
   overscroll-behavior: contain;
   padding: 18px;
   display: flex;
@@ -1122,6 +1123,12 @@ textarea:focus-visible {
 }
 
 .settings-account-hash-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-notification-actions {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 8px;

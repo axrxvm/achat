@@ -197,6 +197,25 @@ const setupRealtime = ({
     }
   };
 
+  const emitToRoomMemberSockets = (roomId, eventName, payload) => {
+    const room = getRoomById(roomId);
+    if (!room) {
+      return;
+    }
+
+    const memberUserIds = Array.isArray(room.memberUserIds) ? room.memberUserIds : [];
+    const seenUserIds = new Set();
+    for (const userId of memberUserIds) {
+      const normalizedUserId = String(userId || "");
+      if (!normalizedUserId || seenUserIds.has(normalizedUserId)) {
+        continue;
+      }
+
+      seenUserIds.add(normalizedUserId);
+      emitToUserSockets(normalizedUserId, eventName, payload);
+    }
+  };
+
   const emitPresence = roomId => {
     const room = getRoomById(roomId);
     if (!room) {
@@ -470,7 +489,7 @@ const setupRealtime = ({
 
       try {
         const message = await addMessage({ roomId, userId, text });
-        io.to(`room:${roomId}`).emit("message:new", message);
+        emitToRoomMemberSockets(roomId, "message:new", message);
         respond({ ok: true, message });
         setImmediate(() => {
           scheduleRoomsUpdateForRoomUsers(roomId);
@@ -501,7 +520,7 @@ const setupRealtime = ({
 
       try {
         const message = await editMessage({ roomId, messageId, requesterUserId: userId, text });
-        io.to(`room:${roomId}`).emit("message:update", { message });
+        emitToRoomMemberSockets(roomId, "message:update", { message });
         respond({ ok: true, message });
         setImmediate(() => {
           scheduleRoomsUpdateForRoomUsers(roomId);
@@ -548,6 +567,7 @@ const setupRealtime = ({
     emitPresence,
     getRoomSnapshotForUser,
     getRoomsPayloadForUser,
+    emitToRoomMemberSockets,
     scheduleRoomsUpdateForRoomUsers,
     sendRoomsUpdateForRoomUsers,
     sendRoomsUpdateToUser

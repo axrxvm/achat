@@ -268,6 +268,24 @@
           </section>
 
           <section class="settings-card">
+            <h3>Notifications</h3>
+            <p id="notification-settings-status" class="settings-note">
+              Desktop notifications are available in supported browsers.
+            </p>
+            <label class="checkbox-row" for="notification-enabled-toggle">
+              <input id="notification-enabled-toggle" name="notificationsEnabled" type="checkbox" />
+              <span>Enable Desktop Notifications</span>
+            </label>
+            <label class="checkbox-row" for="notification-unfocused-only-toggle">
+              <input id="notification-unfocused-only-toggle" name="notificationsUnfocusedOnly" type="checkbox" />
+              <span>Only when app is unfocused</span>
+            </label>
+            <div class="settings-notification-actions">
+              <button id="notification-test-button" type="button" class="secondary-button">Send Test Notification</button>
+            </div>
+          </section>
+
+          <section class="settings-card">
             <h3>Manage Rooms</h3>
             <p class="settings-note">Leave rooms you joined or delete rooms you own.</p>
             <div id="settings-room-list" class="settings-room-list"></div>
@@ -387,6 +405,7 @@
       <button id="message-context-delete" class="member-context-menu__item" type="button" role="menuitem">Delete Message</button>
     </div>
     <div id="room-context-menu" class="member-context-menu hidden" role="menu" aria-hidden="true">
+      <button id="room-context-toggle-mute" class="member-context-menu__item" type="button" role="menuitem">Mute Room</button>
       <button id="room-context-copy-id" class="member-context-menu__item" type="button" role="menuitem">Copy Room ID</button>
     </div>
 

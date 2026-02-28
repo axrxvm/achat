@@ -24,6 +24,7 @@ const SOCKET_ACK_TIMEOUT_MS = 3500;
 const ROOM_POLL_INTERVAL_MS = 8000;
 const ROOM_ORDER_COOKIE_PREFIX = "achat_room_order_";
 const ROOM_ORDER_COOKIE_TTL_SECONDS = 60 * 60 * 24 * 365;
+const NOTIFICATION_PREFS_STORAGE_PREFIX = "achat_notification_prefs_";
 
 const authView = document.getElementById("auth-view");
 const appView = document.getElementById("app-view");
@@ -73,6 +74,10 @@ const composerAttachmentList = document.getElementById("composer-attachment-list
 const displayNameForm = document.getElementById("display-name-form");
 const displayNameInput = document.getElementById("display-name-input");
 const developerModeToggle = document.getElementById("developer-mode-toggle");
+const notificationEnabledToggle = document.getElementById("notification-enabled-toggle");
+const notificationUnfocusedOnlyToggle = document.getElementById("notification-unfocused-only-toggle");
+const notificationSettingsStatus = document.getElementById("notification-settings-status");
+const notificationTestButton = document.getElementById("notification-test-button");
 const openSettingsButton = document.getElementById("open-settings");
 const deleteAccountButton = document.getElementById("delete-account");
 const settingsRoomList = document.getElementById("settings-room-list");
@@ -120,6 +125,7 @@ const messageContextCopyTimestampButton = document.getElementById("message-conte
 const messageContextEditButton = document.getElementById("message-context-edit");
 const messageContextDeleteButton = document.getElementById("message-context-delete");
 const roomContextMenu = document.getElementById("room-context-menu");
+const roomContextToggleMuteButton = document.getElementById("room-context-toggle-mute");
 const roomContextCopyIdButton = document.getElementById("room-context-copy-id");
 
 let toastTimer = null;
@@ -149,6 +155,11 @@ let composerEditTarget = null;
 let localTypingRoomId = null;
 let localTypingLastSentAt = 0;
 let generatedAccountHashValue = "";
+let notificationPreferences = {
+  enabled: false,
+  onlyWhenUnfocused: true,
+  mutedRoomIds: []
+};
 
 const MAX_COMPOSER_ATTACHMENTS = 4;
 const MAX_COMPOSER_ATTACHMENT_BYTES = 12 * 1024 * 1024;
@@ -156,6 +167,7 @@ const MESSAGE_FETCH_LIMIT = 80;
 const MAX_MESSAGES_PER_ROOM = 2000;
 const DEFAULT_MESSAGE_PLACEHOLDER = "Message the room (Enter to send, Ctrl+Enter for newline)";
 const EDIT_MESSAGE_PLACEHOLDER = "Edit message (Enter to save, Esc to cancel)";
+const NOTIFICATION_BODY_MAX = 180;
 const TYPING_EVENT_THROTTLE_MS = 1200;
 const TYPING_EVENT_TTL_MS = 3200;
 const HEAD_SCRAPER_ENDPOINT = "https://head-scraper.aaravm.workers.dev/";
@@ -1160,6 +1172,182 @@ const applyStoredRoomOrder = rooms => {
   return sortedRooms;
 };
 
+const getNotificationPrefsStorageKey = () => `${NOTIFICATION_PREFS_STORAGE_PREFIX}${state.user?.id || "guest"}`;
+
+const normalizeNotificationPreferences = value => {
+  const mutedRoomIds = Array.isArray(value?.mutedRoomIds)
+    ? [...new Set(value.mutedRoomIds.map(roomId => String(roomId || "").trim()).filter(Boolean))]
+    : [];
+
+  return {
+    enabled: Boolean(value?.enabled),
+    onlyWhenUnfocused: value?.onlyWhenUnfocused !== false,
+    mutedRoomIds
+  };
+};
+
+const getMutedNotificationRoomIdsSet = () => new Set(notificationPreferences.mutedRoomIds || []);
+
+const isRoomMutedForNotifications = roomId => {
+  const normalizedRoomId = String(roomId || "").trim();
+  if (!normalizedRoomId) {
+    return false;
+  }
+
+  return getMutedNotificationRoomIdsSet().has(normalizedRoomId);
+};
+
+const setRoomNotificationMuted = (roomId, muted) => {
+  const normalizedRoomId = String(roomId || "").trim();
+  if (!normalizedRoomId) {
+    return;
+  }
+
+  const mutedRoomIds = getMutedNotificationRoomIdsSet();
+  if (muted) {
+    mutedRoomIds.add(normalizedRoomId);
+  } else {
+    mutedRoomIds.delete(normalizedRoomId);
+  }
+
+  notificationPreferences = normalizeNotificationPreferences({
+    ...notificationPreferences,
+    mutedRoomIds: [...mutedRoomIds]
+  });
+  persistNotificationPreferences();
+};
+
+const isDesktopNotificationSupported = () => typeof window !== "undefined" && "Notification" in window;
+
+const getDesktopNotificationPermission = () => {
+  if (!isDesktopNotificationSupported()) {
+    return "unsupported";
+  }
+
+  return String(Notification.permission || "default");
+};
+
+const requestDesktopNotificationPermission = async () => {
+  if (!isDesktopNotificationSupported()) {
+    return "unsupported";
+  }
+
+  try {
+    const result = Notification.requestPermission();
+    if (result && typeof result.then === "function") {
+      return String((await result) || Notification.permission || "default");
+    }
+  } catch (error) {
+    // Older browsers may require callback style requestPermission.
+  }
+
+  return new Promise(resolve => {
+    try {
+      Notification.requestPermission(permission => {
+        resolve(String(permission || Notification.permission || "default"));
+      });
+    } catch (error) {
+      resolve(String(Notification.permission || "default"));
+    }
+  });
+};
+
+const loadNotificationPreferences = () => {
+  notificationPreferences = normalizeNotificationPreferences({
+    enabled: false,
+    onlyWhenUnfocused: true,
+    mutedRoomIds: []
+  });
+
+  if (!state.user) {
+    return notificationPreferences;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(getNotificationPrefsStorageKey());
+    if (!raw) {
+      return notificationPreferences;
+    }
+
+    const parsed = JSON.parse(raw);
+    notificationPreferences = normalizeNotificationPreferences(parsed);
+  } catch (error) {
+    notificationPreferences = normalizeNotificationPreferences(notificationPreferences);
+  }
+
+  return notificationPreferences;
+};
+
+const persistNotificationPreferences = () => {
+  if (!state.user) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(getNotificationPrefsStorageKey(), JSON.stringify(notificationPreferences));
+  } catch (error) {
+    // Ignore storage failures (private mode, quota, etc).
+  }
+};
+
+const renderNotificationSettings = () => {
+  if (!notificationEnabledToggle || !notificationUnfocusedOnlyToggle || !notificationSettingsStatus || !notificationTestButton) {
+    return;
+  }
+
+  const hasUser = Boolean(state.user);
+  const supported = isDesktopNotificationSupported();
+  const permission = getDesktopNotificationPermission();
+
+  if (!hasUser) {
+    notificationEnabledToggle.checked = false;
+    notificationEnabledToggle.disabled = true;
+    notificationUnfocusedOnlyToggle.checked = true;
+    notificationUnfocusedOnlyToggle.disabled = true;
+    notificationTestButton.disabled = true;
+    notificationSettingsStatus.textContent = "Login required.";
+    return;
+  }
+
+  if (!supported) {
+    notificationEnabledToggle.checked = false;
+    notificationEnabledToggle.disabled = true;
+    notificationUnfocusedOnlyToggle.checked = true;
+    notificationUnfocusedOnlyToggle.disabled = true;
+    notificationTestButton.disabled = true;
+    notificationSettingsStatus.textContent = "This browser does not support desktop notifications.";
+    return;
+  }
+
+  if (permission !== "granted" && notificationPreferences.enabled) {
+    notificationPreferences.enabled = false;
+    persistNotificationPreferences();
+  }
+
+  notificationEnabledToggle.disabled = permission === "denied";
+  notificationEnabledToggle.checked = permission === "granted" && notificationPreferences.enabled;
+  notificationUnfocusedOnlyToggle.checked = notificationPreferences.onlyWhenUnfocused;
+  notificationUnfocusedOnlyToggle.disabled = !(permission === "granted" && notificationPreferences.enabled);
+  notificationTestButton.disabled = !(permission === "granted" && notificationPreferences.enabled);
+
+  if (permission === "denied") {
+    notificationSettingsStatus.textContent = "Notifications are blocked in browser settings for this site.";
+    return;
+  }
+
+  if (permission === "granted") {
+    const mutedCount = getMutedNotificationRoomIdsSet().size;
+    notificationSettingsStatus.textContent = notificationPreferences.enabled
+      ? mutedCount > 0
+        ? `Desktop notifications are enabled. ${mutedCount} room${mutedCount === 1 ? "" : "s"} muted.`
+        : "Desktop notifications are enabled."
+      : "Permission is granted. Enable notifications to receive alerts.";
+    return;
+  }
+
+  notificationSettingsStatus.textContent = "Enable notifications to request browser permission.";
+};
+
 const clearRoomDropIndicators = () => {
   for (const element of roomList.querySelectorAll(".room-item.drop-before, .room-item.drop-after")) {
     element.classList.remove("drop-before", "drop-after");
@@ -1782,6 +1970,7 @@ const openSettingsModal = () => {
   renderAccountHashSettings();
   renderPasswordLoginSettings();
   renderDeveloperModeSettings();
+  renderNotificationSettings();
 
   if (state.user) {
     displayNameInput.value = state.user.displayName;
@@ -1890,6 +2079,23 @@ const isMessageListNearBottom = () => {
   return distanceToBottom <= 72;
 };
 
+const scrollMessageListToBottom = ({ smooth = true } = {}) => {
+  if (!messageList) {
+    return;
+  }
+
+  const behavior = smooth ? "smooth" : "auto";
+  if (typeof messageList.scrollTo === "function") {
+    messageList.scrollTo({
+      top: messageList.scrollHeight,
+      behavior
+    });
+    return;
+  }
+
+  messageList.scrollTop = messageList.scrollHeight;
+};
+
 const renderMembers = () => {
   const room = getActiveRoom();
   const members = state.membersByRoom.get(state.activeRoomId) || [];
@@ -1986,7 +2192,7 @@ const replaceRenderedMessageTile = ({ roomId, targetMessageId, nextMessage, forc
   const shouldStickToBottom = forceScroll || forceNextMessageStickToBottom || isMessageListNearBottom();
   targetElement.outerHTML = renderMessageTile(nextMessage);
   if (shouldStickToBottom) {
-    messageList.scrollTop = messageList.scrollHeight;
+    scrollMessageListToBottom({ smooth: true });
   }
 
   const roomMessages = state.messagesByRoom.get(normalizedRoomId) || [];
@@ -2061,6 +2267,7 @@ const renderMessages = ({ forceScroll = false } = {}) => {
   const previousMessage = messages[messages.length - 2];
   const roomChanged = lastRenderedMessageRoomId !== roomId;
   const shouldStickToBottom = forceScroll || forceNextMessageStickToBottom || roomChanged || isMessageListNearBottom();
+  const shouldSmoothAutoScroll = !roomChanged;
   const canAppendSingleMessage =
     !roomChanged &&
     !forceScroll &&
@@ -2073,7 +2280,7 @@ const renderMessages = ({ forceScroll = false } = {}) => {
     messageList.insertAdjacentHTML("beforeend", renderMessageTile(lastMessage));
 
     if (shouldStickToBottom) {
-      messageList.scrollTop = messageList.scrollHeight;
+      scrollMessageListToBottom({ smooth: shouldSmoothAutoScroll });
     }
 
     setLastRenderedMessageState({
@@ -2092,7 +2299,7 @@ const renderMessages = ({ forceScroll = false } = {}) => {
   messageList.innerHTML = messages.map(renderMessageTile).join("");
 
   if (shouldStickToBottom) {
-    messageList.scrollTop = messageList.scrollHeight;
+    scrollMessageListToBottom({ smooth: shouldSmoothAutoScroll });
   }
 
   forceNextMessageStickToBottom = false;
@@ -2251,6 +2458,7 @@ const renderRooms = ({ refreshActivePanels = true } = {}) => {
       renderAccountHashSettings();
       renderPasswordLoginSettings();
       renderDeveloperModeSettings();
+      renderNotificationSettings();
     }
     syncRoomModalForRoomCount();
     return;
@@ -2284,6 +2492,7 @@ const renderRooms = ({ refreshActivePanels = true } = {}) => {
     renderAccountHashSettings();
     renderPasswordLoginSettings();
     renderDeveloperModeSettings();
+    renderNotificationSettings();
   }
   syncRoomModalForRoomCount();
 };
@@ -2317,6 +2526,121 @@ const updateRoomPreviewFromMessage = message => {
   const previewElement = button.querySelector(".room-item__preview");
   if (previewElement) {
     previewElement.textContent = getRoomPreviewText(room);
+  }
+};
+
+const refreshRoomPreviewFromCachedMessages = roomId => {
+  const normalizedRoomId = String(roomId || "").trim();
+  if (!normalizedRoomId) {
+    return;
+  }
+
+  const room = state.rooms.find(entry => String(entry.id || "") === normalizedRoomId);
+  if (!room || String(room.accessStatus || "") !== "member") {
+    return;
+  }
+
+  const roomMessages = state.messagesByRoom.get(normalizedRoomId) || [];
+  const latest = roomMessages[roomMessages.length - 1] || null;
+  room.latestMessage = latest
+    ? {
+        id: String(latest.id || ""),
+        username: String(latest.username || "").trim() || "Unknown",
+        userIsBot: Boolean(latest.userIsBot),
+        text: String(latest.text || ""),
+        createdAt: String(latest.createdAt || "") || new Date().toISOString()
+      }
+    : null;
+
+  if (room.latestMessage?.createdAt) {
+    room.updatedAt = room.latestMessage.createdAt;
+  }
+
+  const button = findRoomListItemById(normalizedRoomId);
+  if (!button) {
+    renderRooms({ refreshActivePanels: false });
+    return;
+  }
+
+  const previewElement = button.querySelector(".room-item__preview");
+  if (previewElement) {
+    previewElement.textContent = getRoomPreviewText(room);
+  }
+};
+
+const truncateNotificationBody = (value, maxLength = NOTIFICATION_BODY_MAX) => {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+};
+
+const shouldDispatchDesktopNotification = message => {
+  if (!message || !state.user) {
+    return false;
+  }
+
+  if (!notificationPreferences.enabled || getDesktopNotificationPermission() !== "granted") {
+    return false;
+  }
+
+  if (String(message.userId || "") === String(state.user.id || "")) {
+    return false;
+  }
+
+  const roomId = String(message.roomId || "").trim();
+  if (!roomId) {
+    return false;
+  }
+
+  if (isRoomMutedForNotifications(roomId)) {
+    return false;
+  }
+
+  if (notificationPreferences.onlyWhenUnfocused) {
+    const isFocusedVisible = document.visibilityState === "visible" && document.hasFocus();
+    if (isFocusedVisible) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+const dispatchDesktopNotificationForMessage = message => {
+  if (!shouldDispatchDesktopNotification(message)) {
+    return;
+  }
+
+  const room = state.rooms.find(entry => String(entry.id || "") === String(message.roomId || "")) || null;
+  const roomName = room ? `#${room.name}` : `Room ${String(message.roomId || "").trim()}`;
+  const authorName = String(message.username || "Unknown").trim() || "Unknown";
+  const body = truncateNotificationBody(message.text) || "Sent an attachment or embed.";
+  const title = `${authorName} in ${roomName}`;
+
+  try {
+    const desktopNotification = new Notification(title, {
+      body,
+      tag: `achat-message-${String(message.id || "") || Date.now()}`,
+      renotify: false,
+      silent: false
+    });
+
+    desktopNotification.onclick = () => {
+      window.focus();
+      if (room?.id) {
+        void selectActiveRoom(String(room.id));
+      }
+      desktopNotification.close();
+    };
+  } catch (error) {
+    // Ignore runtime notification errors.
   }
 };
 
@@ -2761,7 +3085,7 @@ const processMessageSendQueue = async () => {
       const optimisticAdded = addMessageToState(optimisticMessage);
       if (optimisticAdded && String(nextMessage.roomId) === String(state.activeRoomId)) {
         renderMessages();
-        messageList.scrollTop = messageList.scrollHeight;
+        scrollMessageListToBottom({ smooth: true });
       }
 
       const result = await sendMessage({
@@ -2790,11 +3114,11 @@ const processMessageSendQueue = async () => {
             });
             if (!patched) {
               renderMessages();
-              messageList.scrollTop = messageList.scrollHeight;
+              scrollMessageListToBottom({ smooth: true });
             }
           } else {
             renderMessages();
-            messageList.scrollTop = messageList.scrollHeight;
+            scrollMessageListToBottom({ smooth: true });
           }
         }
 
@@ -2921,10 +3245,12 @@ const bootAuthenticated = async () => {
   state.rooms = applyStoredRoomOrder(data.rooms || []);
   state.botApps = [];
   state.botTokensById = new Map();
+  loadNotificationPreferences();
   setGeneratedAccountHash("");
   renderAccountHashSettings();
   renderPasswordLoginSettings();
   renderDeveloperModeSettings();
+  renderNotificationSettings();
   renderManageAppsButton();
 
   authView.classList.add("hidden");
@@ -3471,28 +3797,49 @@ messageContextDeleteButton.addEventListener("click", async () => {
     return;
   }
 
+  const previousMessageIndex = roomMessages.findIndex(message => String(message.id) === messageId);
+  const deletedMessageSnapshot = targetMessage ? { ...targetMessage } : null;
   messageContextDeleteButton.disabled = true;
   try {
-    const result = await deleteMessageById({ roomId: room.id, messageId });
+    const removed = removeMessageFromState({ roomId: room.id, messageId });
+    if (!removed) {
+      return;
+    }
+
     if (
       isComposerEditing() &&
-      String(composerEditTarget.roomId || "") === String(result.roomId || "") &&
-      String(composerEditTarget.messageId || "") === String(result.messageId || "")
+      String(composerEditTarget.roomId || "") === String(room.id || "") &&
+      String(composerEditTarget.messageId || "") === String(messageId || "")
     ) {
       clearComposerEditTarget();
       messageInput.value = "";
       syncMessageInputHeight();
       updateComposerPlaceholder();
     }
-    const removed = removeMessageFromState(result);
-    if (removed && String(result.roomId) === String(state.activeRoomId)) {
+
+    refreshRoomPreviewFromCachedMessages(room.id);
+    if (String(room.id) === String(state.activeRoomId)) {
       renderMessages();
     }
+    hideMessageContextMenu();
 
+    await deleteMessageById({ roomId: room.id, messageId });
     if (!socket.connected) {
       await loadRooms({ showErrors: false });
     }
   } catch (error) {
+    const currentRoomMessages = state.messagesByRoom.get(String(room.id)) || [];
+    const alreadyRestored = currentRoomMessages.some(message => String(message.id) === messageId);
+    if (!alreadyRestored && deletedMessageSnapshot) {
+      const nextRoomMessages = [...currentRoomMessages];
+      const insertAt = Math.max(0, Math.min(previousMessageIndex, nextRoomMessages.length));
+      nextRoomMessages.splice(insertAt, 0, deletedMessageSnapshot);
+      state.messagesByRoom.set(String(room.id), nextRoomMessages.slice(-MAX_MESSAGES_PER_ROOM));
+    }
+    refreshRoomPreviewFromCachedMessages(room.id);
+    if (String(room.id) === String(state.activeRoomId)) {
+      renderMessages();
+    }
     notify(error.message || "Unable to delete message");
   } finally {
     messageContextDeleteButton.disabled = false;
@@ -3809,7 +4156,7 @@ roomList.addEventListener("click", event => {
 
 roomList.addEventListener("contextmenu", event => {
   const target = event.target.closest("[data-room-id]");
-  if (!target || !state.user?.developerMode) {
+  if (!target || !state.user) {
     hideRoomContextMenu();
     return;
   }
@@ -3819,6 +4166,10 @@ roomList.addEventListener("contextmenu", event => {
     hideRoomContextMenu();
     return;
   }
+
+  const allowDeveloperCopy = Boolean(state.user?.developerMode);
+  roomContextCopyIdButton.classList.toggle("hidden", !allowDeveloperCopy);
+  roomContextToggleMuteButton.textContent = isRoomMutedForNotifications(roomId) ? "Unmute Room" : "Mute Room";
 
   event.preventDefault();
   hideMemberContextMenu();
@@ -3939,6 +4290,24 @@ memberList.addEventListener("contextmenu", event => {
     y: event.clientY,
     userId: targetUserId
   });
+});
+
+roomContextToggleMuteButton.addEventListener("click", () => {
+  const roomId = String(roomContextTargetRoomId || "").trim();
+  if (!roomId || !state.user) {
+    hideRoomContextMenu();
+    return;
+  }
+
+  const muted = isRoomMutedForNotifications(roomId);
+  setRoomNotificationMuted(roomId, !muted);
+  roomContextToggleMuteButton.textContent = muted ? "Mute Room" : "Unmute Room";
+
+  const room = state.rooms.find(entry => String(entry.id || "") === roomId);
+  const roomLabel = room ? `#${room.name}` : `Room ${roomId}`;
+  notify(!muted ? `Muted notifications for ${roomLabel}` : `Unmuted notifications for ${roomLabel}`);
+  renderNotificationSettings();
+  hideRoomContextMenu();
 });
 
 roomContextCopyIdButton.addEventListener("click", async () => {
@@ -4160,6 +4529,114 @@ developerModeToggle.addEventListener("change", async () => {
   }
 });
 
+notificationEnabledToggle.addEventListener("change", async () => {
+  if (!state.user) {
+    notificationEnabledToggle.checked = false;
+    renderNotificationSettings();
+    return;
+  }
+
+  if (!isDesktopNotificationSupported()) {
+    notificationEnabledToggle.checked = false;
+    notificationPreferences.enabled = false;
+    persistNotificationPreferences();
+    renderNotificationSettings();
+    notify("Desktop notifications are not supported in this browser.");
+    return;
+  }
+
+  if (!notificationEnabledToggle.checked) {
+    notificationPreferences.enabled = false;
+    persistNotificationPreferences();
+    renderNotificationSettings();
+    notify("Desktop notifications disabled");
+    return;
+  }
+
+  notificationEnabledToggle.disabled = true;
+  try {
+    const permission = getDesktopNotificationPermission();
+    const nextPermission = permission === "granted" ? "granted" : await requestDesktopNotificationPermission();
+    if (nextPermission !== "granted") {
+      notificationPreferences.enabled = false;
+      persistNotificationPreferences();
+      renderNotificationSettings();
+      notify(nextPermission === "denied" ? "Notification permission was denied." : "Notification permission not granted.");
+      return;
+    }
+
+    notificationPreferences.enabled = true;
+    persistNotificationPreferences();
+    renderNotificationSettings();
+    notify("Desktop notifications enabled");
+  } catch (error) {
+    notificationPreferences.enabled = false;
+    persistNotificationPreferences();
+    renderNotificationSettings();
+    notify("Unable to enable desktop notifications");
+  } finally {
+    notificationEnabledToggle.disabled = false;
+  }
+});
+
+notificationUnfocusedOnlyToggle.addEventListener("change", () => {
+  if (!state.user) {
+    notificationUnfocusedOnlyToggle.checked = true;
+    renderNotificationSettings();
+    return;
+  }
+
+  notificationPreferences.onlyWhenUnfocused = Boolean(notificationUnfocusedOnlyToggle.checked);
+  persistNotificationPreferences();
+  renderNotificationSettings();
+});
+
+notificationTestButton.addEventListener("click", async () => {
+  if (!state.user) {
+    notify("You must be logged in");
+    return;
+  }
+
+  if (!isDesktopNotificationSupported()) {
+    notify("Desktop notifications are not supported in this browser.");
+    return;
+  }
+
+  if (!notificationPreferences.enabled) {
+    notify("Enable desktop notifications first.");
+    return;
+  }
+
+  let permission = getDesktopNotificationPermission();
+  if (permission !== "granted") {
+    permission = await requestDesktopNotificationPermission();
+    if (permission !== "granted") {
+      notificationPreferences.enabled = false;
+      persistNotificationPreferences();
+      renderNotificationSettings();
+      notify("Notification permission not granted.");
+      return;
+    }
+  }
+
+  try {
+    const room = getActiveRoom();
+    const roomName = room ? `#${room.name}` : "AChat";
+    const testNotification = new Notification(`AChat Test in ${roomName}`, {
+      body: "You will get notifications for new messages based on your settings.",
+      tag: `achat-test-${Date.now()}`,
+      renotify: false,
+      silent: false
+    });
+    testNotification.onclick = () => {
+      window.focus();
+      testNotification.close();
+    };
+  } catch (error) {
+    notify("Unable to show desktop notification.");
+  }
+});
+
 createRoomForm.addEventListener("submit", async event => {
   event.preventDefault();
 
@@ -4358,7 +4835,7 @@ socket.on("message:new", message => {
       });
       if (!patched) {
         renderMessages();
-        messageList.scrollTop = messageList.scrollHeight;
+        scrollMessageListToBottom({ smooth: true });
       }
     }
     updateRoomPreviewFromMessage(message);
@@ -4371,10 +4848,12 @@ socket.on("message:new", message => {
     return;
   }
 
+  dispatchDesktopNotificationForMessage(message);
+
   if (String(message.roomId) === String(state.activeRoomId)) {
     renderMessages();
     if (message.userId === state.user?.id) {
-      messageList.scrollTop = messageList.scrollHeight;
+      scrollMessageListToBottom({ smooth: true });
     }
     updateComposerPlaceholder();
   }
@@ -4446,6 +4925,8 @@ socket.on("message:delete", payload => {
   if (!removed) {
     return;
   }
+
+  refreshRoomPreviewFromCachedMessages(roomId);
 
   if (roomId === String(state.activeRoomId || "")) {
     renderMessages();
