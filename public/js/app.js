@@ -117,6 +117,7 @@ const memberContextTransferButton = document.getElementById("member-context-tran
 const messageContextMenu = document.getElementById("message-context-menu");
 const messageContextCopyIdButton = document.getElementById("message-context-copy-id");
 const messageContextCopyTimestampButton = document.getElementById("message-context-copy-timestamp");
+const messageContextEditButton = document.getElementById("message-context-edit");
 const messageContextDeleteButton = document.getElementById("message-context-delete");
 const roomContextMenu = document.getElementById("room-context-menu");
 const roomContextCopyIdButton = document.getElementById("room-context-copy-id");
@@ -141,8 +142,10 @@ let dragTargetPosition = "before";
 let suppressRoomClickUntil = 0;
 const messageSendQueue = [];
 let messageSendBusy = false;
+let messageEditBusy = false;
 let chatActionsMenuOpen = false;
 let composerAttachments = [];
+let composerEditTarget = null;
 let localTypingRoomId = null;
 let localTypingLastSentAt = 0;
 let generatedAccountHashValue = "";
@@ -152,6 +155,7 @@ const MAX_COMPOSER_ATTACHMENT_BYTES = 12 * 1024 * 1024;
 const MESSAGE_FETCH_LIMIT = 80;
 const MAX_MESSAGES_PER_ROOM = 2000;
 const DEFAULT_MESSAGE_PLACEHOLDER = "Message the room (Enter to send, Ctrl+Enter for newline)";
+const EDIT_MESSAGE_PLACEHOLDER = "Edit message (Enter to save, Esc to cancel)";
 const TYPING_EVENT_THROTTLE_MS = 1200;
 const TYPING_EVENT_TTL_MS = 3200;
 const HEAD_SCRAPER_ENDPOINT = "https://head-scraper.aaravm.workers.dev/";
@@ -645,19 +649,41 @@ const canDeleteMessage = message => {
   return isMessageAuthor || isRoomOwner;
 };
 
+const canEditMessage = message => {
+  if (!state.user || !message || message.optimistic) {
+    return false;
+  }
+
+  return String(message.userId) === String(state.user.id);
+};
+
+const isComposerEditingMessage = message => {
+  if (!message || !composerEditTarget) {
+    return false;
+  }
+
+  return (
+    String(message.roomId || "") === String(composerEditTarget.roomId || "") &&
+    String(message.id || "") === String(composerEditTarget.messageId || "")
+  );
+};
+
 const renderMessageTile = message => {
   const isSelf = message.userId === state.user?.id;
   const isOptimistic = Boolean(message.optimistic);
   const isBot = Boolean(message.userIsBot);
+  const isEditing = isComposerEditingMessage(message);
+  const isEdited = Boolean(String(message?.editedAt || "").trim());
   const { bodyText, embedUrls } = partitionMessageText(message.text);
   const embeds = renderMessageEmbeds(embedUrls);
   const messageId = escapeHtml(String(message.id || ""));
   return `
-    <article class="message ${isSelf ? "self" : ""} ${isOptimistic ? "sending" : ""}" data-message-id="${messageId}">
+    <article class="message ${isSelf ? "self" : ""} ${isOptimistic ? "sending" : ""} ${isEditing ? "editing" : ""}" data-message-id="${messageId}">
       <header>
         <span class="author">${escapeHtml(message.username)}${isBot ? ' <span class="bot-tag bot-tag--inline">BOT</span>' : ""}</span>
         <span class="message-meta">
           <time>${formatTime(message.createdAt)}</time>
+          ${isEdited ? '<span class="message-edited-state">(edited)</span>' : ""}
           ${isOptimistic ? '<span class="message-send-state">Sending...</span>' : ""}
         </span>
       </header>
@@ -1258,10 +1284,80 @@ const formatTypingPlaceholder = users => {
   return `${names[0]} and ${names.length - 1} others are typing...`;
 };
 
+const isComposerEditing = () => Boolean(composerEditTarget?.roomId && composerEditTarget?.messageId);
+
+const syncComposerActionState = () => {
+  const isEditing = isComposerEditing();
+  const canCompose = !messageInput.disabled;
+  sendMessageButton.textContent = isEditing ? "Save" : "Send";
+  sendMessageButton.disabled = !canCompose || messageEditBusy;
+  attachFilesButton.disabled = !canCompose || isEditing;
+};
+
+const clearComposerEditTarget = ({ clearInput = false } = {}) => {
+  const previousTarget = composerEditTarget;
+  composerEditTarget = null;
+  messageEditBusy = false;
+  if (clearInput) {
+    messageInput.value = "";
+    syncMessageInputHeight();
+  }
+  syncComposerActionState();
+  if (previousTarget && String(previousTarget.roomId || "") === String(state.activeRoomId || "")) {
+    const roomMessages = state.messagesByRoom.get(String(previousTarget.roomId || "")) || [];
+    const targetMessage = roomMessages.find(entry => String(entry.id || "") === String(previousTarget.messageId || ""));
+    if (targetMessage) {
+      const patched = replaceRenderedMessageTile({
+        roomId: previousTarget.roomId,
+        targetMessageId: previousTarget.messageId,
+        nextMessage: targetMessage
+      });
+      if (!patched) {
+        renderMessages();
+      }
+    }
+  }
+};
+
+const beginComposerEdit = message => {
+  const room = getActiveRoom();
+  if (!room || !roomCanChat(room) || !state.activeRoomCanAccess || !canEditMessage(message)) {
+    return false;
+  }
+
+  composerEditTarget = {
+    roomId: String(message.roomId || ""),
+    messageId: String(message.id || "")
+  };
+  messageEditBusy = false;
+  clearComposerAttachments();
+  messageInput.value = String(message.text || "");
+  syncMessageInputHeight();
+  syncComposerActionState();
+  updateComposerPlaceholder();
+  const patched = replaceRenderedMessageTile({
+    roomId: message.roomId,
+    targetMessageId: message.id,
+    nextMessage: message
+  });
+  if (!patched) {
+    renderMessages();
+  }
+  messageInput.focus();
+  messageInput.selectionStart = messageInput.value.length;
+  messageInput.selectionEnd = messageInput.value.length;
+  return true;
+};
+
 const updateComposerPlaceholder = () => {
   const room = getActiveRoom();
   if (!room || !roomCanChat(room) || !state.activeRoomCanAccess) {
     messageInput.placeholder = DEFAULT_MESSAGE_PLACEHOLDER;
+    return;
+  }
+
+  if (isComposerEditing()) {
+    messageInput.placeholder = EDIT_MESSAGE_PLACEHOLDER;
     return;
   }
 
@@ -1338,14 +1434,14 @@ const setConnectionStatus = status => {
 
 const setComposerState = enabled => {
   messageInput.disabled = !enabled;
-  sendMessageButton.disabled = !enabled;
-  attachFilesButton.disabled = !enabled;
   if (!enabled) {
+    clearComposerEditTarget();
     stopLocalTyping({ emit: true });
     messageInput.value = "";
     clearComposerAttachments();
   }
   syncMessageInputHeight();
+  syncComposerActionState();
   updateComposerPlaceholder();
 };
 
@@ -2120,6 +2216,7 @@ const getRoomListSignature = rooms => {
         String(room?.ownerUserId || ""),
         room?.isPrivate ? "1" : "0",
         room?.isDiscoverable === false ? "0" : "1",
+        String(latest?.id || ""),
         String(latest?.createdAt || ""),
         latest?.userIsBot ? "1" : "0",
         String(latest?.username || ""),
@@ -2203,6 +2300,7 @@ const updateRoomPreviewFromMessage = message => {
   }
 
   room.latestMessage = {
+    id: String(message.id || ""),
     username: String(message.username || "").trim() || "Unknown",
     userIsBot: Boolean(message.userIsBot),
     text: String(message.text || ""),
@@ -2220,6 +2318,54 @@ const updateRoomPreviewFromMessage = message => {
   if (previewElement) {
     previewElement.textContent = getRoomPreviewText(room);
   }
+};
+
+const isRoomLatestMessage = ({ roomId, messageId }) => {
+  const normalizedRoomId = String(roomId || "");
+  const normalizedMessageId = String(messageId || "");
+  if (!normalizedRoomId || !normalizedMessageId) {
+    return false;
+  }
+
+  const room = state.rooms.find(entry => String(entry.id || "") === normalizedRoomId);
+  if (room?.latestMessage?.id) {
+    return String(room.latestMessage.id) === normalizedMessageId;
+  }
+
+  const roomMessages = state.messagesByRoom.get(normalizedRoomId) || [];
+  const latestCached = roomMessages[roomMessages.length - 1];
+  return String(latestCached?.id || "") === normalizedMessageId;
+};
+
+const applyEditedMessageUpdate = message => {
+  if (!message?.roomId || !message?.id) {
+    return false;
+  }
+
+  const roomId = String(message.roomId);
+  const messageId = String(message.id);
+  const replaced = replaceMessageInState({
+    roomId,
+    targetMessageId: messageId,
+    nextMessage: message
+  });
+
+  if (replaced && roomId === String(state.activeRoomId || "")) {
+    const patched = replaceRenderedMessageTile({
+      roomId,
+      targetMessageId: messageId,
+      nextMessage: message
+    });
+    if (!patched) {
+      renderMessages();
+    }
+  }
+
+  if (isRoomLatestMessage({ roomId, messageId })) {
+    updateRoomPreviewFromMessage(message);
+  }
+
+  return replaced;
 };
 
 const renderDiscoveryRooms = () => {
@@ -2383,6 +2529,7 @@ const selectActiveRoom = async roomId => {
   }
 
   closeMobileDrawer();
+  clearComposerEditTarget({ clearInput: true });
   stopLocalTyping({ emit: true });
   hideMemberContextMenu();
   hideMessageContextMenu();
@@ -2420,6 +2567,38 @@ const sendMessage = async ({ roomId, text }) => {
   }
 
   const message = await sendMessageViaHttp({ roomId, text });
+  return {
+    transport: "http",
+    message
+  };
+};
+
+const editMessageViaHttp = async ({ roomId, messageId, text }) => {
+  const data = await request(`/api/rooms/${roomId}/messages/${messageId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ text })
+  });
+  return data.message || null;
+};
+
+const editMessageById = async ({ roomId, messageId, text }) => {
+  if (socket.connected) {
+    try {
+      const ack = await emitWithAck("message:edit", { roomId, messageId, text });
+      return {
+        transport: "socket",
+        message: ack?.message || null
+      };
+    } catch (error) {
+      const message = await editMessageViaHttp({ roomId, messageId, text });
+      return {
+        transport: "http",
+        message
+      };
+    }
+  }
+
+  const message = await editMessageViaHttp({ roomId, messageId, text });
   return {
     transport: "http",
     message
@@ -2642,10 +2821,74 @@ const processMessageSendQueue = async () => {
   messageSendBusy = false;
 };
 
+const submitComposerEdit = async () => {
+  if (messageEditBusy) {
+    return false;
+  }
+
+  const room = getActiveRoom();
+  if (!room || !roomCanChat(room) || !state.activeRoomCanAccess || !isComposerEditing()) {
+    clearComposerEditTarget();
+    updateComposerPlaceholder();
+    return false;
+  }
+
+  const targetRoomId = String(composerEditTarget.roomId || "");
+  const targetMessageId = String(composerEditTarget.messageId || "");
+  if (!targetRoomId || !targetMessageId || targetRoomId !== String(room.id)) {
+    clearComposerEditTarget();
+    updateComposerPlaceholder();
+    return false;
+  }
+
+  const text = normalizeMessageText(messageInput.value);
+  if (!text) {
+    notify("Message cannot be empty");
+    return false;
+  }
+
+  messageEditBusy = true;
+  syncComposerActionState();
+  try {
+    const result = await editMessageById({
+      roomId: targetRoomId,
+      messageId: targetMessageId,
+      text
+    });
+
+    if (!result?.message) {
+      throw new Error("Unable to edit message");
+    }
+
+    applyEditedMessageUpdate(result.message);
+    messageInput.value = "";
+    syncMessageInputHeight();
+    stopLocalTyping({ emit: true });
+    clearComposerEditTarget();
+    updateComposerPlaceholder();
+
+    if (result.transport === "http") {
+      await loadRooms({ showErrors: false });
+    }
+    return true;
+  } catch (error) {
+    notify(error.message || "Unable to edit message");
+    return false;
+  } finally {
+    messageEditBusy = false;
+    syncComposerActionState();
+  }
+};
+
 const queueComposerMessage = () => {
   const room = getActiveRoom();
   if (!room || !roomCanChat(room) || !state.activeRoomCanAccess) {
     return false;
+  }
+
+  if (isComposerEditing()) {
+    void submitComposerEdit();
+    return true;
   }
 
   const text = normalizeMessageText(messageInput.value);
@@ -3168,13 +3411,15 @@ messageList.addEventListener("contextmenu", event => {
   const roomMessages = state.messagesByRoom.get(room.id) || [];
   const targetMessage = roomMessages.find(message => String(message.id) === messageId);
   const developerMode = Boolean(state.user?.developerMode);
+  const allowEdit = canEditMessage(targetMessage);
   const allowDelete = canDeleteMessage(targetMessage);
   const allowDeveloperCopy = developerMode && Boolean(targetMessage);
-  if (!allowDelete && !allowDeveloperCopy) {
+  if (!allowEdit && !allowDelete && !allowDeveloperCopy) {
     hideMessageContextMenu();
     return;
   }
 
+  messageContextEditButton.classList.toggle("hidden", !allowEdit);
   messageContextDeleteButton.classList.toggle("hidden", !allowDelete);
   messageContextCopyIdButton.classList.toggle("hidden", !allowDeveloperCopy);
   messageContextCopyTimestampButton.classList.toggle("hidden", !allowDeveloperCopy);
@@ -3188,6 +3433,26 @@ messageList.addEventListener("contextmenu", event => {
     y: event.clientY,
     messageId
   });
+});
+
+messageContextEditButton.addEventListener("click", () => {
+  const room = getActiveRoom();
+  const messageId = String(messageContextTargetMessageId || "").trim();
+  if (!room || !messageId) {
+    hideMessageContextMenu();
+    return;
+  }
+
+  const roomMessages = state.messagesByRoom.get(room.id) || [];
+  const targetMessage = roomMessages.find(message => String(message.id) === messageId);
+  if (!canEditMessage(targetMessage)) {
+    hideMessageContextMenu();
+    notify("You can only edit your own messages.");
+    return;
+  }
+
+  beginComposerEdit(targetMessage);
+  hideMessageContextMenu();
 });
 
 messageContextDeleteButton.addEventListener("click", async () => {
@@ -3209,6 +3474,16 @@ messageContextDeleteButton.addEventListener("click", async () => {
   messageContextDeleteButton.disabled = true;
   try {
     const result = await deleteMessageById({ roomId: room.id, messageId });
+    if (
+      isComposerEditing() &&
+      String(composerEditTarget.roomId || "") === String(result.roomId || "") &&
+      String(composerEditTarget.messageId || "") === String(result.messageId || "")
+    ) {
+      clearComposerEditTarget();
+      messageInput.value = "";
+      syncMessageInputHeight();
+      updateComposerPlaceholder();
+    }
     const removed = removeMessageFromState(result);
     if (removed && String(result.roomId) === String(state.activeRoomId)) {
       renderMessages();
@@ -3282,6 +3557,16 @@ messageList.addEventListener("scroll", () => {
 });
 
 messageInput.addEventListener("keydown", event => {
+  if (event.key === "Escape" && isComposerEditing()) {
+    event.preventDefault();
+    clearComposerEditTarget();
+    messageInput.value = "";
+    syncMessageInputHeight();
+    stopLocalTyping({ emit: true });
+    updateComposerPlaceholder();
+    return;
+  }
+
   if (event.key !== "Enter" || event.isComposing) {
     return;
   }
@@ -4097,6 +4382,15 @@ socket.on("message:new", message => {
   updateRoomPreviewFromMessage(message);
 });
 
+socket.on("message:update", payload => {
+  const message = payload?.message || payload;
+  if (!message?.roomId || !message?.id) {
+    return;
+  }
+
+  applyEditedMessageUpdate(message);
+});
+
 socket.on("typing:update", payload => {
   const roomId = String(payload?.roomId || "").trim();
   const userId = String(payload?.userId || "").trim();
@@ -4136,6 +4430,18 @@ socket.on("message:delete", payload => {
     return;
   }
 
+  if (
+    isComposerEditing() &&
+    String(composerEditTarget.roomId || "") === roomId &&
+    String(composerEditTarget.messageId || "") === messageId
+  ) {
+    clearComposerEditTarget();
+    messageInput.value = "";
+    syncMessageInputHeight();
+    stopLocalTyping({ emit: true });
+    updateComposerPlaceholder();
+  }
+
   const removed = removeMessageFromState({ roomId, messageId });
   if (!removed) {
     return;
@@ -4164,6 +4470,7 @@ socket.on("room:presence", payload => {
 syncMobileDrawerUi();
 setConnectionStatus("syncing");
 syncMessageInputHeight();
+syncComposerActionState();
 updateComposerPlaceholder();
 window.setInterval(() => {
   updateComposerPlaceholder();

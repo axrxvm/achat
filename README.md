@@ -14,6 +14,7 @@ A minimal Discord-like real-time chat app built with Bun, Express, and Socket.IO
 - 7-digit user IDs and 4-digit room IDs
 - Room ownership, creation, join/leave, and multi-room membership
 - Real-time room history + presence updates
+- Message editing and deletion (users and bots)
 - Catbox-backed attachment uploads with inline media previews
 
 ## Run

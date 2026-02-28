@@ -104,6 +104,7 @@ Used in `rooms:update`, `/api/rooms`, `/api/bot/me.rooms`, `/api/me.rooms`.
   "createdAt": "2026-02-28T12:00:00.000Z",
   "updatedAt": "2026-02-28T12:00:00.000Z",
   "latestMessage": {
+    "id": "1234567890",
     "username": "alice",
     "userIsBot": false,
     "text": "hello",
@@ -129,9 +130,14 @@ Notes:
   "userIsBot": true,
   "avatarUrl": null,
   "text": "pong",
-  "createdAt": "2026-02-28T12:11:00.000Z"
+  "createdAt": "2026-02-28T12:11:00.000Z",
+  "editedAt": "2026-02-28T12:12:30.000Z"
 }
 ```
+
+Notes:
+
+- `editedAt` is `null` when a message has never been edited.
 
 ## 4.4 Presence Member Object
 
@@ -451,7 +457,42 @@ Response `201`:
 }
 ```
 
-## 7.4.3 Delete
+## 7.4.3 Edit
+
+`PATCH /api/rooms/:roomId/messages/:messageId`
+
+Body:
+
+```json
+{
+  "text": "updated text"
+}
+```
+
+Rules:
+
+- approved membership required
+- only the message author can edit
+- text normalization matches create:
+  - CRLF -> LF
+  - max length `2000`
+  - trimmed
+  - empty after trim is rejected
+
+Response:
+
+```json
+{
+  "message": {/* Message Object */}
+}
+```
+
+Status behavior:
+
+- `403` for permission failures
+- `404` for missing room/message
+
+## 7.4.4 Delete
 
 `DELETE /api/rooms/:roomId/messages/:messageId`
 
@@ -617,6 +658,46 @@ Bot rule:
 
 - `roomId` is required for bots (no fallback to active room)
 
+## `message:edit` (ack-based)
+
+Payload:
+
+```json
+{
+  "roomId": "7463",
+  "messageId": "1234567890",
+  "text": "updated text"
+}
+```
+
+Ack success:
+
+```json
+{
+  "ok": true,
+  "message": {/* Message Object */}
+}
+```
+
+Ack error examples:
+
+```json
+{
+  "error": "messageId is required"
+}
+```
+
+```json
+{
+  "error": "You are not allowed to edit this message"
+}
+```
+
+Bot rule:
+
+- `roomId` is required for bots (no fallback to active room)
+- bot may edit only its own authored messages
+
 ## `typing:update`
 
 Payload:
@@ -681,6 +762,14 @@ Sent after successful `room:join`.
 }
 ```
 
+## `message:update`
+
+```json
+{
+  "message": {/* Message Object */}
+}
+```
+
 ## `typing:update`
 
 ```json
@@ -727,7 +816,7 @@ Most failures return:
 }
 ```
 
-Some calls also vary status by message mapping (notably bot info endpoints and delete message).
+Some calls also vary status by message mapping (notably bot info endpoints and edit/delete message).
 
 ## 12. Recommended Integration Flow (Production)
 
@@ -737,7 +826,7 @@ Some calls also vary status by message mapping (notably bot info endpoints and d
 4. Wait for owner approval where needed.
 5. Connect Socket.IO with bot token.
 6. For each approved room, emit `room:join` and wait for ack or `room:history`.
-7. Process `message:new`; send responses with `message:send`.
+7. Process `message:new` / `message:update`; send responses with `message:send`.
 8. Keep HTTP fallback for send/list in case socket is down.
 
 Reference implementation:

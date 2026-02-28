@@ -623,6 +623,11 @@ textarea:focus-visible {
   border-style: dashed;
 }
 
+.message.editing {
+  border-color: rgba(123, 197, 255, 0.58);
+  box-shadow: 0 0 0 1px rgba(123, 197, 255, 0.28);
+}
+
 .message header {
   display: flex;
   justify-content: space-between;
@@ -652,6 +657,11 @@ textarea:focus-visible {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+.message-edited-state {
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .message p {
@@ -1386,6 +1396,14 @@ textarea:focus-visible {
 #member-context-kick:hover,
 #message-context-delete:hover {
   background: rgba(182, 70, 70, 0.22);
+}
+
+#message-context-edit {
+  color: #cde2ff;
+}
+
+#message-context-edit:hover {
+  background: rgba(97, 126, 189, 0.22);
 }
 
 #message-context-delete {

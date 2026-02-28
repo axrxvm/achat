@@ -863,6 +863,46 @@ const registerRoutes = ({
     }
   });
 
+  app.patch("/api/rooms/:roomId/messages/:messageId", requireAuth, async (req, res) => {
+    const snapshot = realtime.getRoomSnapshotForUser(req.params.roomId, req.user.id);
+    if (snapshot.error) {
+      return res.status(snapshot.status).json({ error: snapshot.error });
+    }
+
+    if (!snapshot.canAccess) {
+      return res.status(403).json({ error: "Waiting for owner approval" });
+    }
+
+    try {
+      const message = await store.editMessage({
+        roomId: snapshot.room.id,
+        messageId: req.params.messageId,
+        requesterUserId: req.user.id,
+        text: String(req.body?.text || "")
+      });
+
+      io.to(`room:${snapshot.room.id}`).emit("message:update", { message });
+      res.json({ message });
+      setImmediate(() => {
+        if (typeof realtime.scheduleRoomsUpdateForRoomUsers === "function") {
+          realtime.scheduleRoomsUpdateForRoomUsers(snapshot.room.id);
+          return;
+        }
+
+        realtime.sendRoomsUpdateForRoomUsers(snapshot.room.id);
+      });
+    } catch (error) {
+      const message = error.message || "Unable to edit message";
+      const normalized = String(message).toLowerCase();
+      const status = normalized.includes("not allowed")
+        ? 403
+        : normalized.includes("not found")
+          ? 404
+          : 400;
+      res.status(status).json({ error: message });
+    }
+  });
+
   app.delete("/api/rooms/:roomId/messages/:messageId", requireAuth, async (req, res) => {
     const snapshot = realtime.getRoomSnapshotForUser(req.params.roomId, req.user.id);
     if (snapshot.error) {

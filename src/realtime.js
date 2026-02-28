@@ -12,7 +12,8 @@ const setupRealtime = ({
   getRoomPendingUsers,
   getRoomAccessForUser,
   getMessagesPageForRoom,
-  addMessage
+  addMessage,
+  editMessage
 }) => {
   const ROOM_HISTORY_LIMIT = 80;
   const ROOMS_UPDATE_BATCH_DELAY_MS = 140;
@@ -476,6 +477,37 @@ const setupRealtime = ({
         });
       } catch (error) {
         respond({ error: error.message || "Unable to send message" });
+      }
+    });
+
+    socket.on("message:edit", async (payload, callback = () => {}) => {
+      const respond = typeof callback === "function" ? callback : () => {};
+      const isBotUser = Boolean(socket.user?.isBot);
+      const roomId = String(payload?.roomId || (isBotUser ? "" : socket.activeRoomId) || "").trim();
+      const messageId = String(payload?.messageId || "").trim();
+      const text = String(payload?.text || "");
+
+      if (!roomId) {
+        return respond({ error: "roomId is required" });
+      }
+
+      if (!messageId) {
+        return respond({ error: "messageId is required" });
+      }
+
+      if (getRoomAccessForUser(roomId, userId) !== "member") {
+        return respond({ error: "You do not have chat access to this room" });
+      }
+
+      try {
+        const message = await editMessage({ roomId, messageId, requesterUserId: userId, text });
+        io.to(`room:${roomId}`).emit("message:update", { message });
+        respond({ ok: true, message });
+        setImmediate(() => {
+          scheduleRoomsUpdateForRoomUsers(roomId);
+        });
+      } catch (error) {
+        respond({ error: error.message || "Unable to edit message" });
       }
     });
 

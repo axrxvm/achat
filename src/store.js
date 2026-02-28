@@ -442,6 +442,7 @@ const normalizeStore = value => {
     msg.userId = String(msg.userId || "");
     msg.text = String(msg.text || "").slice(0, 2000);
     msg.createdAt = msg.createdAt || nowIso();
+    msg.editedAt = msg.editedAt ? String(msg.editedAt) : null;
   }
 
   for (const session of next.sessions) {
@@ -782,7 +783,8 @@ const formatMessageForClient = message => {
     userIsBot: Boolean(author?.isBot),
     avatarUrl: author?.avatarUrl || null,
     text: message.text,
-    createdAt: message.createdAt
+    createdAt: message.createdAt,
+    editedAt: message.editedAt || null
   };
 };
 
@@ -1691,7 +1693,8 @@ const addMessage = async ({ roomId, userId, text }) => {
     roomId: String(roomId),
     userId: normalizedUserId,
     text: normalizedText,
-    createdAt: nowIso()
+    createdAt: nowIso(),
+    editedAt: null
   };
 
   state.messages.push(message);
@@ -1705,6 +1708,44 @@ const addMessage = async ({ roomId, userId, text }) => {
     .then(() => true)
     .catch(error => {
       console.error(`[ERROR] Failed to persist message ${message.id}`, error);
+      return false;
+    });
+  await waitForPromiseWithTimeout(persistTask, MESSAGE_PERSIST_SOFT_TIMEOUT_MS);
+
+  return formatMessageForClient(message);
+};
+
+const editMessage = async ({ roomId, messageId, requesterUserId, text }) => {
+  const room = findRoomById(roomId);
+  if (!room) {
+    throw new Error("Room not found");
+  }
+
+  const normalizedRequesterId = String(requesterUserId);
+  const normalizedMessageId = String(messageId);
+  const normalizedText = String(text || "").replace(/\r\n/g, "\n").slice(0, 2000).trim();
+  const message = state.messages.find(entry => entry.id === normalizedMessageId);
+  if (!message || String(message.roomId) !== String(room.id)) {
+    throw new Error("Message not found");
+  }
+
+  if (String(message.userId) !== normalizedRequesterId) {
+    throw new Error("You are not allowed to edit this message");
+  }
+
+  if (!normalizedText) {
+    throw new Error("Message cannot be empty");
+  }
+
+  if (normalizedText !== String(message.text || "")) {
+    message.text = normalizedText;
+    message.editedAt = nowIso();
+  }
+
+  const persistTask = persistMessageAndRoom({ message, room })
+    .then(() => true)
+    .catch(error => {
+      console.error(`[ERROR] Failed to persist message edit ${normalizedMessageId}`, error);
       return false;
     });
   await waitForPromiseWithTimeout(persistTask, MESSAGE_PERSIST_SOFT_TIMEOUT_MS);
@@ -1876,6 +1917,7 @@ const listRoomsForUser = userId => {
         updatedAt: room.updatedAt,
         latestMessage: latestMessage
           ? {
+              id: latestMessage.id,
               username: latestMessageAuthor?.displayName || "Unknown",
               userIsBot: Boolean(latestMessageAuthor?.isBot),
               text: latestMessage.text,
@@ -2090,6 +2132,7 @@ module.exports = {
   disableUserAccountHashLogin,
   disableUserPasswordLogin,
   deleteUserAccount,
+  editMessage,
   ensureStore,
   generateAccountHashForUser,
   getMessagesPageForRoom,

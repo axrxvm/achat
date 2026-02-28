@@ -50,7 +50,8 @@ const realtime = setupRealtime({
   getRoomPendingUsers: store.getRoomPendingUsers,
   getRoomAccessForUser: store.getRoomAccessForUser,
   getMessagesPageForRoom: store.getMessagesPageForRoom,
-  addMessage: store.addMessage
+  addMessage: store.addMessage,
+  editMessage: store.editMessage
 });
 
 registerRoutes({
