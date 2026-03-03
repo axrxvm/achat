@@ -16,7 +16,7 @@ const setupRealtime = ({
   editMessage
 }) => {
   const ROOM_HISTORY_LIMIT = 80;
-  const ROOMS_UPDATE_BATCH_DELAY_MS = 140;
+  const ROOMS_UPDATE_BATCH_DELAY_MS = 50; // Reduced from 140ms for faster updates
   const socketsByUser = new Map();
   const pendingRoomUpdateTimers = new Map();
   const parseBearerToken = value => {
