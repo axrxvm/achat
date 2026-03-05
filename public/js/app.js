@@ -17,21 +17,11 @@ const state = {
 
 const socket = io({
   autoConnect: false,
-  withCredentials: true,
-  // Improve connection reliability
-  reconnection: true,
-  reconnectionAttempts: 10,
-  reconnectionDelay: 500,
-  reconnectionDelayMax: 3000,
-  timeout: 8000,
-  // Faster transport upgrade
-  transports: ['websocket', 'polling'],
-  upgrade: true
+  withCredentials: true
 });
 
-// Reduced timeouts for snappier UX
-const SOCKET_ACK_TIMEOUT_MS = 1500;
-const ROOM_POLL_INTERVAL_MS = 3000;
+const SOCKET_ACK_TIMEOUT_MS = 3500;
+const ROOM_POLL_INTERVAL_MS = 8000;
 const ROOM_ORDER_COOKIE_PREFIX = "achat_room_order_";
 const ROOM_ORDER_COOKIE_TTL_SECONDS = 60 * 60 * 24 * 365;
 const NOTIFICATION_PREFS_STORAGE_PREFIX = "achat_notification_prefs_";
@@ -178,31 +168,11 @@ const MAX_MESSAGES_PER_ROOM = 2000;
 const DEFAULT_MESSAGE_PLACEHOLDER = "Message the room (Enter to send, Ctrl+Enter for newline)";
 const EDIT_MESSAGE_PLACEHOLDER = "Edit message (Enter to save, Esc to cancel)";
 const NOTIFICATION_BODY_MAX = 180;
-const TYPING_EVENT_THROTTLE_MS = 800; // Reduced from 1200ms for faster typing indicators
-const TYPING_EVENT_TTL_MS = 2500; // Reduced from 3200ms for snappier updates
+const TYPING_EVENT_THROTTLE_MS = 1200;
+const TYPING_EVENT_TTL_MS = 3200;
 const HEAD_SCRAPER_ENDPOINT = "https://head-scraper.aaravm.workers.dev/";
 const LINK_PREVIEW_DESCRIPTION_MAX = 220;
 const linkPreviewCache = new Map();
-
-// Performance: Debounce helper
-const debounce = (fn, delay) => {
-  let timer = null;
-  return (...args) => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), delay);
-  };
-};
-
-// Performance: RAF-based scroll to prevent jank
-const rafScroll = (element, targetTop) => {
-  if (typeof element.scrollTo === 'function') {
-    requestAnimationFrame(() => {
-      element.scrollTop = targetTop;
-    });
-  } else {
-    element.scrollTop = targetTop;
-  }
-};
 
 const formatTime = isoDate => {
   const date = new Date(isoDate);
@@ -1088,51 +1058,35 @@ const showRoomContextMenu = ({ x, y, roomId }) => {
   positionContextMenu({ menu: roomContextMenu, x, y });
 };
 
-// Request timeout for snappier failure detection
-const REQUEST_TIMEOUT_MS = 8000;
-
 const request = async (url, options = {}) => {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  
-  try {
-    const response = await fetch(url, {
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        ...(options.headers || {})
-      },
-      signal: controller.signal,
-      ...options
-    });
+  const response = await fetch(url, {
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    },
+    ...options
+  });
 
-    const raw = await response.text();
-    let data = {};
+  const raw = await response.text();
+  let data = {};
 
-    if (raw) {
-      try {
-        data = JSON.parse(raw);
-      } catch (error) {
-        data = {};
-      }
+  if (raw) {
+    try {
+      data = JSON.parse(raw);
+    } catch (error) {
+      data = {};
     }
-
-    if (!response.ok) {
-      const errorMessage = data.error || `Request failed (${response.status})`;
-      const error = new Error(errorMessage);
-      error.status = response.status;
-      throw error;
-    }
-
-    return data;
-  } catch (error) {
-    if (error.name === 'AbortError') {
-      throw new Error('Request timed out. Please try again.');
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
   }
+
+  if (!response.ok) {
+    const errorMessage = data.error || `Request failed (${response.status})`;
+    const error = new Error(errorMessage);
+    error.status = response.status;
+    throw error;
+  }
+
+  return data;
 };
 
 const getRoomOrderCookieName = () => `${ROOM_ORDER_COOKIE_PREFIX}${state.user?.id || "guest"}`;
@@ -1661,19 +1615,9 @@ const setConnectionStatus = status => {
   }
 
   const normalized = status === "online" || status === "syncing" || status === "offline" ? status : "offline";
-  const labels = {
-    online: "Live",
-    syncing: "Connecting...",
-    offline: "Reconnecting..."
-  };
-  const label = labels[normalized] || "Offline";
+  const label = normalized === "online" ? "Live" : normalized === "syncing" ? "Connecting" : "Reconnecting";
   connectionChip.className = `connection-chip ${normalized}`;
   connectionChip.textContent = label;
-  
-  // Trigger any pending actions when coming online
-  if (normalized === "online" && messageSendQueue.length > 0 && !messageSendBusy) {
-    processMessageSendQueue();
-  }
 };
 
 const setComposerState = enabled => {
@@ -2135,23 +2079,21 @@ const isMessageListNearBottom = () => {
   return distanceToBottom <= 72;
 };
 
-const scrollMessageListToBottom = ({ smooth = false } = {}) => {
+const scrollMessageListToBottom = ({ smooth = true } = {}) => {
   if (!messageList) {
     return;
   }
 
-  // Use RAF for smooth, jank-free scrolling
-  requestAnimationFrame(() => {
-    const targetTop = messageList.scrollHeight;
-    if (smooth && 'scrollBehavior' in document.documentElement.style) {
-      messageList.scrollTo({
-        top: targetTop,
-        behavior: 'smooth'
-      });
-    } else {
-      messageList.scrollTop = targetTop;
-    }
-  });
+  const behavior = smooth ? "smooth" : "auto";
+  if (typeof messageList.scrollTo === "function") {
+    messageList.scrollTo({
+      top: messageList.scrollHeight,
+      behavior
+    });
+    return;
+  }
+
+  messageList.scrollTop = messageList.scrollHeight;
 };
 
 const renderMembers = () => {
@@ -3117,110 +3059,86 @@ const processMessageSendQueue = async () => {
     }
 
     let optimisticMessage = null;
-    let retryCount = 0;
-    const MAX_RETRIES = 2;
-    
-    const attemptSend = async () => {
-      try {
-        const uploadedFiles = await uploadComposerFiles(nextMessage.files || []);
-        const attachmentUrls = uploadedFiles.map(item => String(item?.url || "").trim()).filter(Boolean);
-        const mergedText = [nextMessage.text || "", ...attachmentUrls].filter(Boolean).join("\n").trim();
-        if (!mergedText) {
-          return true; // Skip empty messages
-        }
-        if (mergedText.length > 2000) {
-          notify("Message is too long after adding attachment links. Remove some attachments.");
-          return true; // Don't retry
-        }
-
-        // Create optimistic message immediately for instant feedback
-        if (!optimisticMessage) {
-          optimisticMessage = {
-            id: `tmp-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
-            roomId: nextMessage.roomId,
-            userId: state.user?.id || "",
-            username: state.user?.displayName || "You",
-            avatarUrl: state.user?.avatarUrl || null,
-            text: mergedText,
-            createdAt: new Date().toISOString(),
-            optimistic: true
-          };
-
-          const optimisticAdded = addMessageToState(optimisticMessage);
-          if (optimisticAdded && String(nextMessage.roomId) === String(state.activeRoomId)) {
-            // Immediate render for instant feedback
-            renderMessages();
-            scrollMessageListToBottom({ smooth: false });
-          }
-        }
-
-        const result = await sendMessage({
-          roomId: nextMessage.roomId,
-          text: mergedText
-        });
-
-        if (result?.message) {
-          const optimisticId = String(optimisticMessage?.id || "");
-          const replaced = optimisticMessage
-            ? replaceMessageInState({
-                roomId: nextMessage.roomId,
-                targetMessageId: optimisticMessage.id,
-                nextMessage: result.message
-              })
-            : false;
-          const added = replaced ? false : addMessageToState(result.message);
-
-          if ((replaced || added) && String(result.message.roomId) === String(state.activeRoomId)) {
-            if (replaced && optimisticId) {
-              const patched = replaceRenderedMessageTile({
-                roomId: result.message.roomId,
-                targetMessageId: optimisticId,
-                nextMessage: result.message,
-                forceScroll: true
-              });
-              if (!patched) {
-                renderMessages();
-              }
-            } else {
-              renderMessages();
-            }
-          }
-
-          updateRoomPreviewFromMessage(result.message);
-        }
-
-        if (result?.transport === "http") {
-          // Background refresh, don't await
-          loadRooms({ showErrors: false });
-        }
-        return true; // Success
-      } catch (error) {
-        retryCount++;
-        if (retryCount <= MAX_RETRIES) {
-          // Wait briefly before retry
-          await new Promise(resolve => setTimeout(resolve, 300 * retryCount));
-          return false; // Retry
-        }
-        
-        // All retries failed
-        if (optimisticMessage) {
-          const removed = removeMessageFromState({
-            roomId: optimisticMessage.roomId,
-            messageId: optimisticMessage.id
-          });
-          if (removed && String(optimisticMessage.roomId) === String(state.activeRoomId)) {
-            renderMessages();
-          }
-        }
-        notify(error.message || "Unable to send message. Please try again.");
-        return true; // Don't retry further
+    try {
+      const uploadedFiles = await uploadComposerFiles(nextMessage.files || []);
+      const attachmentUrls = uploadedFiles.map(item => String(item?.url || "").trim()).filter(Boolean);
+      const mergedText = [nextMessage.text || "", ...attachmentUrls].filter(Boolean).join("\n").trim();
+      if (!mergedText) {
+        continue;
       }
-    };
+      if (mergedText.length > 2000) {
+        notify("Message is too long after adding attachment links. Remove some attachments.");
+        continue;
+      }
 
-    // Attempt send with retries
-    let success = false;
-    while (!success) {
-      success = await attemptSend();
+      optimisticMessage = {
+        id: `tmp-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
+        roomId: nextMessage.roomId,
+        userId: state.user?.id || "",
+        username: state.user?.displayName || "You",
+        avatarUrl: state.user?.avatarUrl || null,
+        text: mergedText,
+        createdAt: new Date().toISOString(),
+        optimistic: true
+      };
+
+      const optimisticAdded = addMessageToState(optimisticMessage);
+      if (optimisticAdded && String(nextMessage.roomId) === String(state.activeRoomId)) {
+        renderMessages();
+        scrollMessageListToBottom({ smooth: true });
+      }
+
+      const result = await sendMessage({
+        roomId: nextMessage.roomId,
+        text: mergedText
+      });
+
+      if (result?.message) {
+        const optimisticId = String(optimisticMessage?.id || "");
+        const replaced = optimisticMessage
+          ? replaceMessageInState({
+              roomId: nextMessage.roomId,
+              targetMessageId: optimisticMessage.id,
+              nextMessage: result.message
+            })
+          : false;
+        const added = replaced ? false : addMessageToState(result.message);
+
+        if ((replaced || added) && String(result.message.roomId) === String(state.activeRoomId)) {
+          if (replaced && optimisticId) {
+            const patched = replaceRenderedMessageTile({
+              roomId: result.message.roomId,
+              targetMessageId: optimisticId,
+              nextMessage: result.message,
+              forceScroll: true
+            });
+            if (!patched) {
+              renderMessages();
+              scrollMessageListToBottom({ smooth: true });
+            }
+          } else {
+            renderMessages();
+            scrollMessageListToBottom({ smooth: true });
+          }
+        }
+
+        updateRoomPreviewFromMessage(result.message);
+      }
+
+      if (result?.transport === "http") {
+        await loadRooms({ showErrors: false });
+      }
+    } catch (error) {
+      if (optimisticMessage) {
+        const removed = removeMessageFromState({
+          roomId: optimisticMessage.roomId,
+          messageId: optimisticMessage.id
+        });
+        if (removed && String(optimisticMessage.roomId) === String(state.activeRoomId)) {
+          renderMessages();
+        }
+      }
+      notify(error.message || "Unable to send message");
     }
   }
 
@@ -3362,7 +3280,6 @@ accountHashLoginForm.addEventListener("submit", async event => {
   }
 
   accountHashLoginButton.disabled = true;
-  accountHashLoginButton.classList.add('loading');
   try {
     await request("/auth/account-hash/login", {
       method: "POST",
@@ -3376,7 +3293,6 @@ accountHashLoginForm.addEventListener("submit", async event => {
     notify(error.message || "Unable to login with account hash");
   } finally {
     accountHashLoginButton.disabled = false;
-    accountHashLoginButton.classList.remove('loading');
   }
 });
 
@@ -3391,7 +3307,6 @@ passwordLoginForm.addEventListener("submit", async event => {
   }
 
   passwordLoginButton.disabled = true;
-  passwordLoginButton.classList.add('loading');
   try {
     await request("/auth/password/login", {
       method: "POST",
@@ -3405,7 +3320,6 @@ passwordLoginForm.addEventListener("submit", async event => {
     notify(error.message || "Unable to login with email and password");
   } finally {
     passwordLoginButton.disabled = false;
-    passwordLoginButton.classList.remove('loading');
   }
 });
 
@@ -3975,30 +3889,19 @@ messageContextCopyTimestampButton.addEventListener("click", async () => {
   }
 });
 
-// Debounced input handler for better performance
-const debouncedTypingSync = debounce(() => {
-  syncLocalTypingFromInput();
-  updateComposerPlaceholder();
-}, 100);
-
 messageInput.addEventListener("input", () => {
   syncMessageInputHeight();
-  debouncedTypingSync();
+  syncLocalTypingFromInput();
+  updateComposerPlaceholder();
 });
-
-// Debounced scroll handler to prevent excessive load calls
-const debouncedLoadOlder = debounce(() => {
-  if (messageList.scrollTop <= 52) {
-    void loadOlderMessagesForActiveRoom();
-  }
-}, 150);
 
 messageList.addEventListener("scroll", () => {
   if (messageList.scrollTop > 52) {
     return;
   }
-  debouncedLoadOlder();
-}, { passive: true });
+
+  void loadOlderMessagesForActiveRoom();
+});
 
 messageInput.addEventListener("keydown", event => {
   if (event.key === "Escape" && isComposerEditing()) {
@@ -4838,44 +4741,19 @@ messageForm.addEventListener("submit", event => {
 socket.on("connect", async () => {
   setConnectionStatus("online");
   scheduleRoomPolling();
-  // Immediately try to join active room for faster sync
   await joinActiveRoom();
-  // Background refresh to catch any missed updates
-  loadRooms({ showErrors: false });
 });
 
-socket.on("disconnect", reason => {
+socket.on("disconnect", () => {
   stopLocalTyping({ emit: false });
-  // Show different status based on disconnect reason
-  if (reason === "io server disconnect" || reason === "io client disconnect") {
-    setConnectionStatus("offline");
-  } else {
-    setConnectionStatus("syncing");
-  }
+  setConnectionStatus("offline");
   scheduleRoomPolling();
   updateComposerPlaceholder();
 });
 
-socket.on("connect_error", error => {
-  setConnectionStatus("syncing");
-  // Only notify on persistent failures, not transient ones
-  if (socket.io?.backoff?.attempts > 3) {
-    notify("Connection issues. Messages will still be delivered.");
-  }
-});
-
-// Handle reconnection
-socket.io.on("reconnect_attempt", attempt => {
-  setConnectionStatus("syncing");
-});
-
-socket.io.on("reconnect", () => {
-  setConnectionStatus("online");
-  // Re-sync state after reconnection
-  loadRooms({ showErrors: false });
-  if (state.activeRoomId) {
-    loadActiveRoomSnapshot({ showErrors: false, joinSocket: true, includeMessages: false });
-  }
+socket.on("connect_error", () => {
+  setConnectionStatus("offline");
+  notify("Realtime socket failed. Using HTTP fallback.");
 });
 
 socket.on("rooms:update", rooms => {

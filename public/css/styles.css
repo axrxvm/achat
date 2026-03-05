@@ -15,29 +15,12 @@
   --scroll-thumb-start: rgba(92, 211, 182, 0.86);
   --scroll-thumb-end: rgba(93, 132, 210, 0.88);
   --scroll-thumb-border: rgba(221, 238, 255, 0.22);
-  /* Performance optimizations */
-  --transition-fast: 80ms;
-  --transition-normal: 120ms;
-  --transition-smooth: 200ms;
 }
 
 * {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
-}
-
-/* GPU acceleration for animations */
-.room-item,
-.message,
-.member-list li,
-.room-panel,
-.member-panel,
-.primary-button,
-.secondary-button {
-  transform: translateZ(0);
-  will-change: transform;
-  backface-visibility: hidden;
 }
 
 html,
@@ -288,15 +271,9 @@ label {
   flex-direction: column;
   gap: 3px;
   transition:
-    transform var(--transition-fast) ease,
-    border-color var(--transition-fast) ease,
-    background-color var(--transition-fast) ease;
-  -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
-}
-
-.room-item:active {
-  transform: scale(0.98);
+    transform 120ms ease,
+    border-color 120ms ease,
+    background-color 120ms ease;
 }
 
 .room-item:hover {
@@ -406,13 +383,11 @@ textarea {
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 14px;
-  font-size: max(16px, 14px); /* Prevent iOS zoom on focus */
   outline: none;
   transition:
-    border-color var(--transition-fast) ease,
-    box-shadow var(--transition-fast) ease;
+    border-color 120ms ease,
+    box-shadow 120ms ease;
   font-family: inherit;
-  -webkit-appearance: none;
 }
 
 input:focus,
@@ -432,19 +407,9 @@ textarea:focus {
   padding: 10px 14px;
   font-size: 13px;
   transition:
-    transform var(--transition-fast) ease,
-    filter var(--transition-fast) ease,
-    background-color var(--transition-fast) ease,
-    opacity var(--transition-fast) ease;
-  -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
-  user-select: none;
-}
-
-.primary-button:active,
-.secondary-button:active,
-.inline-button:active {
-  transform: scale(0.96);
+    transform 120ms ease,
+    filter 120ms ease,
+    background-color 120ms ease;
 }
 
 .primary-button {
@@ -580,7 +545,6 @@ textarea:focus-visible {
   font-size: 12px;
   color: #dbe3f3;
   background: rgba(44, 49, 58, 0.68);
-  transition: all var(--transition-fast) ease;
 }
 
 .connection-chip::before {
@@ -589,7 +553,6 @@ textarea:focus-visible {
   height: 8px;
   border-radius: 999px;
   background: #8692a9;
-  transition: all var(--transition-fast) ease;
 }
 
 .connection-chip.online::before {
@@ -597,19 +560,8 @@ textarea:focus-visible {
   box-shadow: 0 0 0 5px rgba(77, 213, 178, 0.18);
 }
 
-.connection-chip.syncing::before {
-  background: #f0c866;
-  animation: connection-pulse 1.2s ease-in-out infinite;
-}
-
 .connection-chip.offline::before {
   background: #f09a6a;
-  animation: connection-pulse 0.8s ease-in-out infinite;
-}
-
-@keyframes connection-pulse {
-  0%, 100% { opacity: 0.5; transform: scale(0.9); }
-  50% { opacity: 1; transform: scale(1.1); }
 }
 
 .mobile-action-group {
@@ -641,13 +593,11 @@ textarea:focus-visible {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* Removed scroll-behavior: smooth - causes lag with many messages */
+  scroll-behavior: smooth;
   overscroll-behavior: contain;
   padding: 18px;
   display: flex;
   flex-direction: column;
-  contain: layout style;
-  -webkit-overflow-scrolling: touch;
   gap: 10px;
   background:
     linear-gradient(180deg, rgba(18, 21, 25, 0.4), rgba(18, 21, 25, 0)),
@@ -660,8 +610,7 @@ textarea:focus-visible {
   border-radius: 12px;
   padding: 10px 12px;
   max-width: 760px;
-  animation: message-in 100ms ease;
-  contain: layout style;
+  animation: message-in 160ms ease;
 }
 
 .message.self {
@@ -671,18 +620,8 @@ textarea:focus-visible {
 }
 
 .message.sending {
-  opacity: 0.7;
+  opacity: 0.82;
   border-style: dashed;
-  border-color: rgba(61, 166, 140, 0.5);
-}
-
-.message.sending .message-send-state {
-  animation: pulse-opacity 1s ease-in-out infinite;
-}
-
-@keyframes pulse-opacity {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
 }
 
 .message.editing {
@@ -1573,26 +1512,25 @@ textarea:focus-visible {
     width: min(88vw, 340px);
     z-index: 30;
     box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
-    transition: transform 120ms cubic-bezier(0.22, 0.61, 0.36, 1);
-    will-change: transform;
+    transition: transform 180ms ease;
   }
 
   .room-panel {
     left: 0;
-    transform: translate3d(-105%, 0, 0);
+    transform: translateX(-105%);
   }
 
   .member-panel {
     right: 0;
-    transform: translate3d(105%, 0, 0);
+    transform: translateX(105%);
   }
 
   .app-view.mobile-rooms-open .room-panel {
-    transform: translate3d(0, 0, 0);
+    transform: translateX(0);
   }
 
   .app-view.mobile-members-open .member-panel {
-    transform: translate3d(0, 0, 0);
+    transform: translateX(0);
   }
 
   .chat-header {
@@ -1677,14 +1615,6 @@ textarea:focus-visible {
     border: 0;
     background: rgba(4, 7, 10, 0.64);
     backdrop-filter: blur(2px);
-    -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation;
-    animation: fade-in 100ms ease;
-  }
-
-  @keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
   }
 
   .message-list {
@@ -1720,7 +1650,7 @@ textarea:focus-visible {
 @keyframes message-in {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(5px);
   }
 
   to {
@@ -1732,7 +1662,7 @@ textarea:focus-visible {
 @keyframes toast-up {
   from {
     opacity: 0;
-    transform: translate(-50%, 8px);
+    transform: translate(-50%, 10px);
   }
 
   to {
@@ -1741,73 +1671,11 @@ textarea:focus-visible {
   }
 }
 
-/* Loading spinner for async operations */
-.loading-spinner {
-  display: inline-block;
-  width: 16px;
-  height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.2);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.6s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.primary-button.loading,
-.secondary-button.loading {
-  position: relative;
-  color: transparent;
-  pointer-events: none;
-}
-
-.primary-button.loading::after,
-.secondary-button.loading::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 16px;
-  height: 16px;
-  margin: -8px 0 0 -8px;
-  border: 2px solid rgba(255, 255, 255, 0.2);
-  border-top-color: currentColor;
-  border-radius: 50%;
-  animation: spin 0.6s linear infinite;
-}
-
-.primary-button.loading::after {
-  border-top-color: #06130f;
-}
-
-.secondary-button.loading::after {
-  border-top-color: var(--text);
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}
-
-/* Improve scrollbar performance */
-.room-list,
-.message-list,
-.member-list {
-  scrollbar-gutter: stable;
-}
-
-/* Fast scroll momentum on mobile */
-@supports (-webkit-touch-callout: none) {
-  .room-list,
-  .message-list,
-  .member-list {
-    -webkit-overflow-scrolling: touch;
+    animation: none !important;
+    transition: none !important;
   }
 }
