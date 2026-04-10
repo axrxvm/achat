@@ -6,6 +6,7 @@ const setupRealtime = ({
   touchSession,
   authenticateBotToken,
   listRoomsForUser,
+  listMemberRoomIdsForUser,
   getRoomUserIds,
   getRoomById,
   getRoomMembers,
@@ -103,10 +104,15 @@ const setupRealtime = ({
     return connectedSockets;
   };
   const isUserOnline = userId => getConnectedSocketsForUser(userId).length > 0;
-  const getMemberRoomIdsForUser = userId =>
-    listRoomsForUser(userId)
+  const getMemberRoomIdsForUser = userId => {
+    if (typeof listMemberRoomIdsForUser === "function") {
+      return listMemberRoomIdsForUser(userId);
+    }
+
+    return listRoomsForUser(userId)
       .filter(room => room.accessStatus === "member")
       .map(room => room.id);
+  };
   const getPresenceStatusInRoom = (userId, roomId) => {
     const connectedSockets = getConnectedSocketsForUser(userId);
     if (connectedSockets.length === 0) {
@@ -222,10 +228,58 @@ const setupRealtime = ({
       return;
     }
 
+    const memberPresenceByUserId = new Map();
+    for (const memberId of room.memberUserIds) {
+      const normalizedMemberId = String(memberId || "");
+      if (!normalizedMemberId || memberPresenceByUserId.has(normalizedMemberId)) {
+        continue;
+      }
+
+      const connectedSockets = getConnectedSocketsForUser(normalizedMemberId);
+      let presenceStatus = "offline";
+
+      if (connectedSockets.length > 0) {
+        let hasFocusedChatSocket = false;
+        let isActiveInRoom = false;
+
+        for (const socket of connectedSockets) {
+          if (socket.user?.isBot) {
+            const botRoomIds = socket.botActiveRoomIds instanceof Set ? socket.botActiveRoomIds : new Set();
+            if (botRoomIds.has(String(room.id))) {
+              isActiveInRoom = true;
+              break;
+            }
+
+            if (botRoomIds.size > 0) {
+              hasFocusedChatSocket = true;
+            }
+            continue;
+          }
+
+          if (!socket.isChatFocused) {
+            continue;
+          }
+
+          hasFocusedChatSocket = true;
+          if (String(socket.activeRoomId || "") === String(room.id)) {
+            isActiveInRoom = true;
+            break;
+          }
+        }
+
+        presenceStatus = isActiveInRoom ? "active" : hasFocusedChatSocket ? "other" : "idle";
+      }
+
+      memberPresenceByUserId.set(normalizedMemberId, {
+        online: connectedSockets.length > 0,
+        presenceStatus
+      });
+    }
+
     const members = getRoomMembers(room.id).map(member => ({
       ...member,
-      online: isUserOnline(member.id),
-      presenceStatus: getPresenceStatusInRoom(member.id, room.id)
+      online: memberPresenceByUserId.get(String(member.id || ""))?.online || false,
+      presenceStatus: memberPresenceByUserId.get(String(member.id || ""))?.presenceStatus || "offline"
     }));
 
     const pendingUsers = getRoomPendingUsers(room.id);
@@ -287,6 +341,55 @@ const setupRealtime = ({
     const messagePage =
       canAccess && includeMessages ? getMessagesPageForRoom({ roomId: room.id, limit: messageLimit }) : { messages: [], hasMore: false };
 
+    let memberPresenceByUserId = null;
+    if (canAccess) {
+      memberPresenceByUserId = new Map();
+      for (const memberId of room.memberUserIds) {
+        const normalizedMemberId = String(memberId || "");
+        if (!normalizedMemberId || memberPresenceByUserId.has(normalizedMemberId)) {
+          continue;
+        }
+
+        const connectedSockets = getConnectedSocketsForUser(normalizedMemberId);
+        let presenceStatus = "offline";
+        if (connectedSockets.length > 0) {
+          let hasFocusedChatSocket = false;
+          let isActiveInRoom = false;
+
+          for (const socket of connectedSockets) {
+            if (socket.user?.isBot) {
+              const botRoomIds = socket.botActiveRoomIds instanceof Set ? socket.botActiveRoomIds : new Set();
+              if (botRoomIds.has(String(room.id))) {
+                isActiveInRoom = true;
+                break;
+              }
+              if (botRoomIds.size > 0) {
+                hasFocusedChatSocket = true;
+              }
+              continue;
+            }
+
+            if (!socket.isChatFocused) {
+              continue;
+            }
+
+            hasFocusedChatSocket = true;
+            if (String(socket.activeRoomId || "") === String(room.id)) {
+              isActiveInRoom = true;
+              break;
+            }
+          }
+
+          presenceStatus = isActiveInRoom ? "active" : hasFocusedChatSocket ? "other" : "idle";
+        }
+
+        memberPresenceByUserId.set(normalizedMemberId, {
+          online: connectedSockets.length > 0,
+          presenceStatus
+        });
+      }
+    }
+
     return {
       room,
       canAccess,
@@ -295,8 +398,8 @@ const setupRealtime = ({
       members: canAccess
         ? getRoomMembers(room.id).map(member => ({
             ...member,
-            online: isUserOnline(member.id),
-            presenceStatus: getPresenceStatusInRoom(member.id, room.id)
+            online: memberPresenceByUserId.get(String(member.id || ""))?.online || false,
+            presenceStatus: memberPresenceByUserId.get(String(member.id || ""))?.presenceStatus || "offline"
           }))
         : [],
       pendingUsers: isOwner ? getRoomPendingUsers(room.id) : [],

@@ -33,6 +33,7 @@ const APP_BASE_URL = process.env.APP_BASE_URL
 const SESSION_COOKIE = "achat_session";
 const SESSION_COOKIE_MAX_AGE_DAYS = Math.max(1, toPositiveNumber(process.env.SESSION_COOKIE_MAX_AGE_DAYS, 30));
 const SESSION_COOKIE_MAX_AGE_SECONDS = SESSION_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60;
+const SESSION_TOUCH_MIN_INTERVAL_SECONDS = Math.max(1, toPositiveNumber(process.env.SESSION_TOUCH_MIN_INTERVAL_SECONDS, 60));
 const REQUEST_JSON_LIMIT = String(process.env.REQUEST_JSON_LIMIT || "80mb").trim() || "80mb";
 const PUBLIC_DIR = path.join(__dirname, "../public");
 const MONGODB_MAIN_DB_URL = String(process.env.MONGODB_MAIN_DB_URL || "").trim();
@@ -55,6 +56,7 @@ module.exports = {
   SESSION_COOKIE,
   SESSION_COOKIE_MAX_AGE_DAYS,
   SESSION_COOKIE_MAX_AGE_SECONDS,
+  SESSION_TOUCH_MIN_INTERVAL_SECONDS,
   REQUEST_JSON_LIMIT,
   PUBLIC_DIR,
   MONGODB_MAIN_DB_URL,

@@ -1501,8 +1501,16 @@ const touchSession = async sessionId => {
     return null;
   }
 
+  const now = Date.now();
+  const previousSeenAt = new Date(session.lastSeenAt || 0).getTime();
+  const minTouchIntervalMs = Math.max(1000, Number(config.SESSION_TOUCH_MIN_INTERVAL_SECONDS || 60) * 1000);
+  const shouldPersist = !Number.isFinite(previousSeenAt) || now - previousSeenAt >= minTouchIntervalMs;
+
   session.lastSeenAt = nowIso();
-  await persistSession(session);
+  if (shouldPersist) {
+    await persistSession(session);
+  }
+
   return clone(session);
 };
 
@@ -2160,7 +2168,16 @@ const listRoomsForUser = userId => {
           : null
       };
     })
-    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+    .sort((left, right) => toTimestamp(right.updatedAt) - toTimestamp(left.updatedAt));
+};
+
+const listMemberRoomIdsForUser = userId => {
+  const normalizedUserId = String(userId || "");
+  if (!normalizedUserId) {
+    return [];
+  }
+
+  return state.rooms.filter(room => room.memberUserIds.includes(normalizedUserId)).map(room => String(room.id));
 };
 
 const listDiscoverableRoomsForUser = userId => {
@@ -2433,6 +2450,7 @@ module.exports = {
   leaveRoom,
   listBotsForOwner,
   listDiscoverableRoomsForUser,
+  listMemberRoomIdsForUser,
   listRoomsForUser,
   regenerateBotTokenForOwner,
   rejectPendingUser,

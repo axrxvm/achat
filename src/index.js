@@ -90,6 +90,7 @@ const realtime = setupRealtime({
   touchSession: store.touchSession,
   authenticateBotToken: store.authenticateBotToken,
   listRoomsForUser: store.listRoomsForUser,
+  listMemberRoomIdsForUser: store.listMemberRoomIdsForUser,
   getRoomUserIds: store.getRoomUserIds,
   getRoomById: store.getRoomById,
   getRoomMembers: store.getRoomMembers,
