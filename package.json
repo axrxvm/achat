@@ -11,7 +11,8 @@
     "bun",
     "express",
     "socket.io",
-    "oauth",
+    "e2ee",
+    "zero-knowledge",
     "chat"
   ],
   "author": "Aarav Mehta",

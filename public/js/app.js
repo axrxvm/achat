@@ -1,5 +1,6 @@
 const state = {
   user: null,
+  devices: [],
   rooms: [],
   discoverableRooms: [],
   botApps: [],
@@ -25,12 +26,26 @@ const ROOM_POLL_INTERVAL_MS = 8000;
 const ROOM_ORDER_COOKIE_PREFIX = "achat_room_order_";
 const ROOM_ORDER_COOKIE_TTL_SECONDS = 60 * 60 * 24 * 365;
 const NOTIFICATION_PREFS_STORAGE_PREFIX = "achat_notification_prefs_";
+const ROOM_KEYS_STORAGE_PREFIX = "achat_room_keys_";
+const BOT_SYSTEM_ENABLED = false;
 
 const authView = document.getElementById("auth-view");
+const bootView = document.getElementById("boot-view");
 const appView = document.getElementById("app-view");
-const oauthButton = document.getElementById("oauth-login");
+const authChoicePanel = document.getElementById("auth-choice-panel");
+const authLoginPanel = document.getElementById("auth-login-panel");
+const authRegisterPanel = document.getElementById("auth-register-panel");
+const authOpenLoginButton = document.getElementById("auth-open-login");
+const authOpenRegisterButton = document.getElementById("auth-open-register");
+const authBackFromLoginButton = document.getElementById("auth-back-from-login");
+const authBackFromRegisterButton = document.getElementById("auth-back-from-register");
+const accountCreateForm = document.getElementById("account-create-form");
+const accountCreateUsernameInput = document.getElementById("account-create-username-input");
+const accountCreateDeviceLabelInput = document.getElementById("account-create-device-label-input");
+const accountCreateButton = document.getElementById("account-create-button");
 const accountHashLoginForm = document.getElementById("account-hash-login-form");
 const accountHashLoginInput = document.getElementById("account-hash-login-input");
+const accountHashDeviceLabelInput = document.getElementById("account-hash-device-label-input");
 const accountHashLoginButton = document.getElementById("account-hash-login-button");
 const passwordLoginForm = document.getElementById("password-login-form");
 const passwordLoginEmailInput = document.getElementById("password-login-email-input");
@@ -49,9 +64,11 @@ const roomList = document.getElementById("room-list");
 
 const activeRoomName = document.getElementById("active-room-name");
 const activeRoomMeta = document.getElementById("active-room-meta");
+const e2eeStatus = document.getElementById("e2ee-status");
 const leaveRoomButton = document.getElementById("leave-room");
 const deleteRoomButton = document.getElementById("delete-room");
 const connectionChip = document.getElementById("connection-chip");
+const roomKeyButton = document.getElementById("room-key-button");
 const chatActionsToggleButton = document.getElementById("chat-actions-toggle");
 const chatActionsMenu = document.getElementById("chat-actions-menu");
 const chatMenuSettingsButton = document.getElementById("chat-menu-settings");
@@ -86,6 +103,11 @@ const generateAccountHashButton = document.getElementById("generate-account-hash
 const copyAccountHashButton = document.getElementById("copy-account-hash");
 const disableAccountHashButton = document.getElementById("disable-account-hash");
 const accountHashDisplay = document.getElementById("account-hash-display");
+const deviceSettingsForm = document.getElementById("device-settings-form");
+const maxDevicesInput = document.getElementById("max-devices-input");
+const saveMaxDevicesButton = document.getElementById("save-max-devices");
+const deviceList = document.getElementById("device-list");
+const openRoomKeySettingsButton = document.getElementById("open-room-key-settings");
 const passwordLoginStatus = document.getElementById("password-login-status");
 const passwordLoginEmail = document.getElementById("password-login-email");
 const settingsPasswordForm = document.getElementById("settings-password-form");
@@ -102,6 +124,12 @@ const openAppsModalButton = document.getElementById("open-apps-modal");
 const roomModal = document.getElementById("room-modal");
 const roomModalBackdrop = document.getElementById("room-modal-backdrop");
 const roomModalCloseButton = document.getElementById("room-modal-close");
+const accountHexModal = document.getElementById("account-hex-modal");
+const accountHexModalBackdrop = document.getElementById("account-hex-modal-backdrop");
+const accountHexModalCloseButton = document.getElementById("account-hex-modal-close");
+const accountHexModalValue = document.getElementById("account-hex-modal-value");
+const accountHexModalCopyButton = document.getElementById("account-hex-modal-copy");
+const accountHexModalDownloadButton = document.getElementById("account-hex-modal-download");
 const discoveryRoomList = document.getElementById("discovery-room-list");
 const refreshDiscoveryButton = document.getElementById("refresh-discovery");
 const settingsModal = document.getElementById("settings-modal");
@@ -155,14 +183,61 @@ let composerEditTarget = null;
 let localTypingRoomId = null;
 let localTypingLastSentAt = 0;
 let generatedAccountHashValue = "";
+let latestCreatedAccountHexValue = "";
 let notificationPreferences = {
   enabled: false,
   onlyWhenUnfocused: true,
   mutedRoomIds: []
 };
 
+const roomKeysByRoomId = new Map();
+
+const setAuthMode = mode => {
+  const normalizedMode = String(mode || "choice").trim();
+  if (authChoicePanel) {
+    authChoicePanel.classList.toggle("hidden", normalizedMode !== "choice");
+  }
+  if (authLoginPanel) {
+    authLoginPanel.classList.toggle("hidden", normalizedMode !== "login");
+  }
+  if (authRegisterPanel) {
+    authRegisterPanel.classList.toggle("hidden", normalizedMode !== "register");
+  }
+};
+
+if (authOpenLoginButton) {
+  authOpenLoginButton.addEventListener("click", () => {
+    setAuthMode("login");
+    window.setTimeout(() => {
+      accountHashLoginInput?.focus();
+    }, 0);
+  });
+}
+
+if (authOpenRegisterButton) {
+  authOpenRegisterButton.addEventListener("click", () => {
+    setAuthMode("register");
+    window.setTimeout(() => {
+      accountCreateUsernameInput?.focus();
+    }, 0);
+  });
+}
+
+if (authBackFromLoginButton) {
+  authBackFromLoginButton.addEventListener("click", () => {
+    setAuthMode("choice");
+  });
+}
+
+if (authBackFromRegisterButton) {
+  authBackFromRegisterButton.addEventListener("click", () => {
+    setAuthMode("choice");
+  });
+}
+
 const MAX_COMPOSER_ATTACHMENTS = 4;
 const MAX_COMPOSER_ATTACHMENT_BYTES = 12 * 1024 * 1024;
+const MESSAGE_TEXT_MAX_LENGTH = 8192;
 const MESSAGE_FETCH_LIMIT = 80;
 const MAX_MESSAGES_PER_ROOM = 2000;
 const DEFAULT_MESSAGE_PLACEHOLDER = "Message the room (Enter to send, Ctrl+Enter for newline)";
@@ -173,6 +248,495 @@ const TYPING_EVENT_TTL_MS = 3200;
 const HEAD_SCRAPER_ENDPOINT = "https://head-scraper.aaravm.workers.dev/";
 const LINK_PREVIEW_DESCRIPTION_MAX = 220;
 const linkPreviewCache = new Map();
+const E2EE_MESSAGE_PREFIX = "enc:v1:";
+const E2EE_ROOM_KEY_ENVELOPE_PREFIX = "e2ee:key:v1:";
+const DEVICE_E2EE_KEYPAIR_STORAGE_PREFIX = "achat_device_e2ee_keypair_";
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+let deviceE2EEKeyPair = null;
+let deviceE2EEPublicKeyBase64 = "";
+const pairwiseAesKeyCache = new Map();
+const roomKeyResyncStateByRoomId = new Map();
+const ROOM_KEY_RESYNC_MIN_INTERVAL_MS = 12000;
+
+const bytesToBase64 = bytes => {
+  const list = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  let binary = "";
+  for (const byte of list) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+};
+
+const base64ToBytes = value => {
+  const binary = atob(String(value || ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+};
+
+const getRoomKeysStorageKey = () => `${ROOM_KEYS_STORAGE_PREFIX}${state.user?.id || "guest"}`;
+const getDeviceE2EEKeyStorageKey = () => `${DEVICE_E2EE_KEYPAIR_STORAGE_PREFIX}${state.user?.id || "guest"}`;
+
+const loadRoomKeysForUser = () => {
+  roomKeysByRoomId.clear();
+  if (!state.user || typeof window === "undefined" || !window.localStorage) {
+    return;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(getRoomKeysStorageKey()) || "{}";
+    const parsed = JSON.parse(raw);
+    for (const [roomId, passphrase] of Object.entries(parsed || {})) {
+      const normalizedRoomId = String(roomId || "").trim();
+      const normalizedPassphrase = String(passphrase || "").trim();
+      if (normalizedRoomId && normalizedPassphrase) {
+        roomKeysByRoomId.set(normalizedRoomId, normalizedPassphrase);
+      }
+    }
+  } catch (error) {
+    roomKeysByRoomId.clear();
+  }
+};
+
+const persistRoomKeysForUser = () => {
+  if (!state.user || typeof window === "undefined" || !window.localStorage) {
+    return;
+  }
+
+  const payload = {};
+  for (const [roomId, passphrase] of roomKeysByRoomId.entries()) {
+    payload[roomId] = passphrase;
+  }
+  window.localStorage.setItem(getRoomKeysStorageKey(), JSON.stringify(payload));
+};
+
+const getRoomPassphrase = roomId => {
+  const normalizedRoomId = String(roomId || "").trim();
+  if (!normalizedRoomId) {
+    return "";
+  }
+
+  return String(roomKeysByRoomId.get(normalizedRoomId) || "").trim();
+};
+
+const setRoomPassphrase = ({ roomId, passphrase }) => {
+  const normalizedRoomId = String(roomId || "").trim();
+  const normalizedPassphrase = String(passphrase || "").trim();
+  if (!normalizedRoomId) {
+    return;
+  }
+
+  if (!normalizedPassphrase) {
+    roomKeysByRoomId.delete(normalizedRoomId);
+  } else {
+    roomKeysByRoomId.set(normalizedRoomId, normalizedPassphrase);
+  }
+  persistRoomKeysForUser();
+};
+
+const isEncryptedMessageText = value => String(value || "").startsWith(E2EE_MESSAGE_PREFIX);
+const isRoomKeyEnvelopeText = value => String(value || "").startsWith(E2EE_ROOM_KEY_ENVELOPE_PREFIX);
+
+const ensureCryptoSupport = () => {
+  if (!window.crypto?.subtle) {
+    throw new Error("Secure crypto is not available in this browser");
+  }
+};
+
+const importAesKeyFromBase64 = async keyBase64 => {
+  ensureCryptoSupport();
+  const keyBytes = base64ToBytes(String(keyBase64 || ""));
+  return window.crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt", "decrypt"]);
+};
+
+const getLocalDeviceE2EEKeyPair = async () => {
+  ensureCryptoSupport();
+  if (deviceE2EEKeyPair && deviceE2EEPublicKeyBase64) {
+    return {
+      keyPair: deviceE2EEKeyPair,
+      publicKeyBase64: deviceE2EEPublicKeyBase64
+    };
+  }
+
+  if (!state.user || typeof window === "undefined" || !window.localStorage) {
+    throw new Error("User is not ready for E2EE key setup");
+  }
+
+  const storageKey = getDeviceE2EEKeyStorageKey();
+  const storedRaw = window.localStorage.getItem(storageKey);
+
+  let keyPair = null;
+  let publicKeyBase64 = "";
+
+  if (storedRaw) {
+    try {
+      const parsed = JSON.parse(storedRaw);
+      const privateKeyBytes = base64ToBytes(parsed?.privateKey || "");
+      const publicKeyBytes = base64ToBytes(parsed?.publicKey || "");
+      if (privateKeyBytes.length > 0 && publicKeyBytes.length > 0) {
+        const privateKey = await window.crypto.subtle.importKey(
+          "pkcs8",
+          privateKeyBytes,
+          { name: "ECDH", namedCurve: "P-256" },
+          true,
+          ["deriveBits"]
+        );
+        const publicKey = await window.crypto.subtle.importKey(
+          "raw",
+          publicKeyBytes,
+          { name: "ECDH", namedCurve: "P-256" },
+          true,
+          []
+        );
+
+        keyPair = { privateKey, publicKey };
+        publicKeyBase64 = String(parsed.publicKey || "");
+      }
+    } catch (error) {
+      keyPair = null;
+      publicKeyBase64 = "";
+    }
+  }
+
+  if (!keyPair || !publicKeyBase64) {
+    keyPair = await window.crypto.subtle.generateKey(
+      { name: "ECDH", namedCurve: "P-256" },
+      true,
+      ["deriveBits"]
+    );
+    const exportedPrivateKey = new Uint8Array(await window.crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
+    const exportedPublicKey = new Uint8Array(await window.crypto.subtle.exportKey("raw", keyPair.publicKey));
+    publicKeyBase64 = bytesToBase64(exportedPublicKey);
+    window.localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        privateKey: bytesToBase64(exportedPrivateKey),
+        publicKey: publicKeyBase64
+      })
+    );
+  }
+
+  deviceE2EEKeyPair = keyPair;
+  deviceE2EEPublicKeyBase64 = publicKeyBase64;
+
+  return {
+    keyPair,
+    publicKeyBase64
+  };
+};
+
+const ensureE2EEIdentityRegistration = async () => {
+  if (!state.user || state.user.isBot) {
+    return;
+  }
+
+  const { publicKeyBase64 } = await getLocalDeviceE2EEKeyPair();
+  if (state.user.hasE2EEPublicKey && publicKeyBase64) {
+    return;
+  }
+
+  const data = await request("/api/me/e2ee/public-key", {
+    method: "PUT",
+    body: JSON.stringify({ publicKey: publicKeyBase64 })
+  });
+
+  if (data?.user) {
+    state.user = data.user;
+  }
+};
+
+const derivePairwiseAesKey = async ({ remotePublicKeyBase64 }) => {
+  const normalizedRemotePublicKeyBase64 = String(remotePublicKeyBase64 || "").trim();
+  if (!normalizedRemotePublicKeyBase64) {
+    throw new Error("Missing recipient public key");
+  }
+
+  const cacheKey = `${String(state.user?.id || "guest")}:${normalizedRemotePublicKeyBase64}`;
+  const cachedPairwiseKey = pairwiseAesKeyCache.get(cacheKey);
+  if (cachedPairwiseKey) {
+    return cachedPairwiseKey;
+  }
+
+  const { keyPair } = await getLocalDeviceE2EEKeyPair();
+  const remotePublicKey = await window.crypto.subtle.importKey(
+    "raw",
+    base64ToBytes(normalizedRemotePublicKeyBase64),
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    []
+  );
+
+  const sharedBits = await window.crypto.subtle.deriveBits(
+    {
+      name: "ECDH",
+      public: remotePublicKey
+    },
+    keyPair.privateKey,
+    256
+  );
+
+  const pairwiseKey = await window.crypto.subtle.importKey("raw", sharedBits, "AES-GCM", false, ["encrypt", "decrypt"]);
+  pairwiseAesKeyCache.set(cacheKey, pairwiseKey);
+  return pairwiseKey;
+};
+
+const encryptRoomMessageText = async ({ plaintext, roomKeyBase64 }) => {
+  const key = await importAesKeyFromBase64(roomKeyBase64);
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const ciphertextBuffer = await window.crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv
+    },
+    key,
+    textEncoder.encode(String(plaintext || ""))
+  );
+
+  return `${E2EE_MESSAGE_PREFIX}${bytesToBase64(iv)}:${bytesToBase64(new Uint8Array(ciphertextBuffer))}`;
+};
+
+const decryptRoomMessageText = async ({ ciphertext, roomKeyBase64 }) => {
+  const raw = String(ciphertext || "");
+  if (!isEncryptedMessageText(raw)) {
+    return raw;
+  }
+
+  const encoded = raw.slice(E2EE_MESSAGE_PREFIX.length);
+  const separator = encoded.indexOf(":");
+  if (separator <= 0) {
+    throw new Error("Invalid encrypted payload");
+  }
+
+  const iv = base64ToBytes(encoded.slice(0, separator));
+  const cipherBytes = base64ToBytes(encoded.slice(separator + 1));
+  const key = await importAesKeyFromBase64(roomKeyBase64);
+  const plainBuffer = await window.crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv
+    },
+    key,
+    cipherBytes
+  );
+
+  return textDecoder.decode(plainBuffer);
+};
+
+const buildRoomKeyEnvelopePayload = async ({ roomId, roomKeyBase64, recipientUserId, recipientPublicKey }) => {
+  const pairwiseKey = await derivePairwiseAesKey({ remotePublicKeyBase64: recipientPublicKey });
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await window.crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv
+    },
+    pairwiseKey,
+    textEncoder.encode(String(roomKeyBase64 || ""))
+  );
+
+  const payload = {
+    v: 1,
+    t: String(recipientUserId || ""),
+    f: String(state.user?.id || ""),
+    p: String(deviceE2EEPublicKeyBase64 || ""),
+    i: bytesToBase64(iv),
+    c: bytesToBase64(new Uint8Array(ciphertext))
+  };
+
+  return `${E2EE_ROOM_KEY_ENVELOPE_PREFIX}${JSON.stringify(payload)}`;
+};
+
+const retryDecryptCachedMessagesForRoom = async roomId => {
+  const normalizedRoomId = String(roomId || "").trim();
+  if (!normalizedRoomId) {
+    return;
+  }
+
+  const roomKeyBase64 = getRoomPassphrase(normalizedRoomId);
+  if (!roomKeyBase64) {
+    return;
+  }
+
+  const cachedMessages = state.messagesByRoom.get(normalizedRoomId) || [];
+  if (cachedMessages.length === 0) {
+    return;
+  }
+
+  let changed = false;
+  for (const entry of cachedMessages) {
+    const deferredCiphertext = String(entry?.encryptedRawText || "").trim();
+    const ciphertext = deferredCiphertext || (isEncryptedMessageText(entry?.text) ? String(entry.text || "") : "");
+    if (!ciphertext || !isEncryptedMessageText(ciphertext)) {
+      continue;
+    }
+
+    try {
+      const plaintext = await decryptRoomMessageText({
+        ciphertext,
+        roomKeyBase64
+      });
+      if (entry.text !== plaintext) {
+        entry.text = plaintext;
+        changed = true;
+      }
+      if (entry.encryptedRawText) {
+        delete entry.encryptedRawText;
+        changed = true;
+      }
+    } catch (error) {
+      // Keep placeholder until a valid key for this ciphertext is available.
+    }
+  }
+
+  if (!changed) {
+    return;
+  }
+
+  refreshRoomPreviewFromCachedMessages(normalizedRoomId);
+  if (normalizedRoomId === String(state.activeRoomId || "")) {
+    renderMessages();
+  }
+};
+
+const tryConsumeRoomKeyEnvelope = async ({ roomId, rawText }) => {
+  if (!isRoomKeyEnvelopeText(rawText)) {
+    return false;
+  }
+
+  const payloadRaw = String(rawText).slice(E2EE_ROOM_KEY_ENVELOPE_PREFIX.length);
+  let payload = null;
+  try {
+    payload = JSON.parse(payloadRaw);
+  } catch (error) {
+    return true;
+  }
+
+  if (String(payload?.t || "") !== String(state.user?.id || "")) {
+    return true;
+  }
+
+  const senderPublicKey = String(payload?.p || "").trim();
+  const ivBase64 = String(payload?.i || "").trim();
+  const cipherBase64 = String(payload?.c || "").trim();
+  if (!senderPublicKey || !ivBase64 || !cipherBase64) {
+    return true;
+  }
+
+  try {
+    const pairwiseKey = await derivePairwiseAesKey({ remotePublicKeyBase64: senderPublicKey });
+    const plaintext = await window.crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: base64ToBytes(ivBase64)
+      },
+      pairwiseKey,
+      base64ToBytes(cipherBase64)
+    );
+
+    const roomKeyBase64 = textDecoder.decode(plaintext);
+    if (roomKeyBase64) {
+      setRoomPassphrase({ roomId, passphrase: roomKeyBase64 });
+      await retryDecryptCachedMessagesForRoom(roomId);
+    }
+  } catch (error) {
+    // Ignore malformed or undecryptable key envelopes.
+  }
+
+  return true;
+};
+
+const prepareMessageForDisplay = async message => {
+  const next = { ...(message || {}) };
+  const roomId = String(next.roomId || "").trim();
+  const rawText = String(next.text || "");
+  if (!roomId) {
+    return next;
+  }
+
+  if (isRoomKeyEnvelopeText(rawText)) {
+    await tryConsumeRoomKeyEnvelope({ roomId, rawText });
+    return null;
+  }
+
+  if (!isEncryptedMessageText(rawText)) {
+    return next;
+  }
+
+  const roomKeyBase64 = getRoomPassphrase(roomId);
+  if (!roomKeyBase64) {
+    next.text = "[Secure message loading...]";
+    next.encryptedRawText = rawText;
+    return next;
+  }
+
+  try {
+    next.text = await decryptRoomMessageText({
+      ciphertext: rawText,
+      roomKeyBase64
+    });
+  } catch (error) {
+    next.text = "[Secure message unavailable on this device]";
+    next.encryptedRawText = rawText;
+  }
+
+  return next;
+};
+
+const prepareMessagesForDisplay = async messages => {
+  const list = Array.isArray(messages) ? messages : [];
+  const result = [];
+  for (const entry of list) {
+    const prepared = await prepareMessageForDisplay(entry);
+    if (prepared) {
+      result.push(prepared);
+    }
+  }
+
+  // If key envelopes arrived in the same batch, retry decrypting deferred ciphertext rows.
+  for (const entry of result) {
+    const roomId = String(entry?.roomId || "").trim();
+    const deferredCiphertext = String(entry?.encryptedRawText || "").trim();
+    if (!roomId || !deferredCiphertext || !isEncryptedMessageText(deferredCiphertext)) {
+      continue;
+    }
+
+    const roomKeyBase64 = getRoomPassphrase(roomId);
+    if (!roomKeyBase64) {
+      continue;
+    }
+
+    try {
+      entry.text = await decryptRoomMessageText({
+        ciphertext: deferredCiphertext,
+        roomKeyBase64
+      });
+      delete entry.encryptedRawText;
+    } catch (error) {
+      // Keep user-facing unavailable placeholder if deferred decrypt still fails.
+    }
+  }
+
+  return result;
+};
+
+const prepareRoomsForDisplay = async rooms => {
+  const list = Array.isArray(rooms) ? rooms : [];
+  return Promise.all(
+    list.map(async room => {
+      const next = { ...(room || {}) };
+      if (next.latestMessage) {
+        next.latestMessage = await prepareMessageForDisplay({
+          ...next.latestMessage,
+          roomId: String(next.latestMessage?.roomId || next.id || "")
+        });
+      }
+      return next;
+    })
+  );
+};
 
 const formatTime = isoDate => {
   const date = new Date(isoDate);
@@ -649,7 +1213,7 @@ const toHumanSize = bytes => {
   return `${(kb / 1024).toFixed(1)} MB`;
 };
 
-const normalizeMessageText = value => String(value || "").replace(/\r\n/g, "\n").slice(0, 2000).trim();
+const normalizeMessageText = value => String(value || "").replace(/\r\n/g, "\n").slice(0, MESSAGE_TEXT_MAX_LENGTH).trim();
 const canDeleteMessage = message => {
   const room = getActiveRoom();
   if (!room || !state.user || !message) {
@@ -721,7 +1285,7 @@ const insertNewlineAtCursor = input => {
   const end = Number(input.selectionEnd || 0);
   const value = String(input.value || "");
   const next = `${value.slice(0, start)}\n${value.slice(end)}`;
-  input.value = next.slice(0, 2000);
+  input.value = next.slice(0, MESSAGE_TEXT_MAX_LENGTH);
   const cursor = Math.min(start + 1, input.value.length);
   input.selectionStart = cursor;
   input.selectionEnd = cursor;
@@ -1660,6 +2224,79 @@ const setGeneratedAccountHash = value => {
   copyAccountHashButton.disabled = !generatedAccountHashValue;
 };
 
+const closeAccountHexModal = () => {
+  if (!accountHexModal) {
+    return;
+  }
+
+  accountHexModal.classList.add("hidden");
+  accountHexModal.setAttribute("aria-hidden", "true");
+};
+
+const buildAccountHexDownloadText = ({ accountHash, user }) => {
+  const safeAccountHash = String(accountHash || "").trim();
+  const userId = String(user?.id || state.user?.id || "").trim() || "unknown";
+  const username = String(user?.displayName || state.user?.displayName || "").trim() || "unknown";
+  const createdAt = String(user?.createdAt || state.user?.createdAt || "").trim() || "unknown";
+  const generatedAt = new Date().toISOString();
+
+  return [
+    "AChat Account Recovery Note",
+    "================================",
+    "",
+    `Account Hex: ${safeAccountHash}`,
+    `Username: ${username}`,
+    `User ID: ${userId}`,
+    `Account Created At: ${createdAt}`,
+    `Hex Exported At: ${generatedAt}`,
+    `App URL: ${window.location.origin}`,
+    "",
+    "IMPORTANT:",
+    "- Keep this file private.",
+    "- If you lose your account hex, account recovery may not be possible.",
+    "- Never share this file publicly."
+  ].join("\n");
+};
+
+const downloadAccountHexTextFile = ({ accountHash, user }) => {
+  const safeAccountHash = String(accountHash || "").trim();
+  if (!safeAccountHash) {
+    return false;
+  }
+
+  const usernameRaw = String(user?.displayName || state.user?.displayName || "user")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "user";
+  const filename = `achat-${usernameRaw}-account-hex.txt`;
+  const textPayload = buildAccountHexDownloadText({ accountHash: safeAccountHash, user });
+  const blob = new Blob([textPayload], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  return true;
+};
+
+const openAccountHexModal = ({ accountHash, user }) => {
+  const safeAccountHash = String(accountHash || "").trim();
+  if (!safeAccountHash || !accountHexModal || !accountHexModalValue) {
+    return;
+  }
+
+  latestCreatedAccountHexValue = safeAccountHash;
+  accountHexModalValue.textContent = safeAccountHash;
+  accountHexModal.classList.remove("hidden");
+  accountHexModal.setAttribute("aria-hidden", "false");
+  accountHexModal.setAttribute("data-user-id", String(user?.id || state.user?.id || ""));
+};
+
 const renderAccountHashSettings = () => {
   const hasAccountHash = Boolean(state.user?.hasAccountHash);
   generateAccountHashButton.textContent = hasAccountHash ? "Regenerate Account Hash" : "Generate Account Hash";
@@ -1675,11 +2312,22 @@ const renderAccountHashSettings = () => {
   }
 
   accountHashStatus.textContent = hasAccountHash
-    ? "Hash login is active. Format: word(optionalNumber)-word-word-word-number. Regenerating replaces your current hash."
-    : "Generate an account hash with format word(optionalNumber)-word-word-word-number, and keep it private.";
+    ? "Hash login is active. Format: word(optionalNumber)-word-word-word-word-word-word-number-checkword. Regenerating replaces your current hash."
+    : "Generate an account hash with format word(optionalNumber)-word-word-word-word-word-word-number-checkword, and keep it private.";
 };
 
 const renderPasswordLoginSettings = () => {
+  if (
+    !settingsPasswordSubmit ||
+    !settingsCurrentPasswordInput ||
+    !settingsPasswordInput ||
+    !disablePasswordLoginButton ||
+    !passwordLoginStatus ||
+    !passwordLoginEmail
+  ) {
+    return;
+  }
+
   const hasUser = Boolean(state.user);
   const hasPasswordLogin = Boolean(state.user?.hasPasswordLogin);
   const oauthEmail = String(state.user?.email || "").trim().toLowerCase();
@@ -1733,7 +2381,7 @@ const renderDeveloperModeSettings = () => {
   }
 };
 
-const isBotAppManagerEnabled = () => Boolean(state.user && !state.user.isBot && state.user.developerMode);
+const isBotAppManagerEnabled = () => Boolean(BOT_SYSTEM_ENABLED && state.user && !state.user.isBot && state.user.developerMode);
 
 const renderManageAppsButton = () => {
   if (!openAppsModalButton) {
@@ -1924,6 +2572,69 @@ const renderSettingsRooms = () => {
     .join("");
 };
 
+const loadDeviceSettings = async ({ showErrors = false } = {}) => {
+  if (!state.user || state.user.isBot) {
+    state.devices = [];
+    return;
+  }
+
+  try {
+    const data = await request("/api/me/devices");
+    state.devices = Array.isArray(data.devices) ? data.devices : [];
+    if (state.user) {
+      state.user.maxDevices = Number(data.maxDevices) || state.user.maxDevices || 3;
+    }
+  } catch (error) {
+    if (showErrors) {
+      notify(error.message || "Unable to load device settings");
+    }
+  }
+};
+
+const renderDeviceSettings = () => {
+  if (!deviceList || !maxDevicesInput || !saveMaxDevicesButton || !deviceSettingsForm) {
+    return;
+  }
+
+  const hasUser = Boolean(state.user && !state.user.isBot);
+  maxDevicesInput.disabled = !hasUser;
+  saveMaxDevicesButton.disabled = !hasUser;
+
+  if (!hasUser) {
+    maxDevicesInput.value = "3";
+    deviceList.innerHTML = '<p class="empty">Login required.</p>';
+    return;
+  }
+
+  const maxDevices = Number(state.user?.maxDevices) || 3;
+  maxDevicesInput.value = String(maxDevices);
+
+  if (!Array.isArray(state.devices) || state.devices.length === 0) {
+    deviceList.innerHTML = '<p class="empty">No active devices found.</p>';
+    return;
+  }
+
+  deviceList.innerHTML = state.devices
+    .map(device => {
+      const lastSeen = formatDateTime(device.lastSeenAt);
+      const created = formatDateTime(device.createdAt);
+      return `
+        <article class="settings-room-item" data-device-id="${escapeHtml(device.id)}">
+          <div>
+            <p class="settings-room-item__name">${escapeHtml(device.deviceLabel || "Unnamed device")}${
+              device.isCurrent ? ' <strong>(Current)</strong>' : ""
+            }</p>
+            <p class="settings-room-item__meta">Created ${escapeHtml(created)} · Last seen ${escapeHtml(lastSeen)}</p>
+          </div>
+          <div class="settings-room-item__actions">
+            <button class="secondary-button danger" type="button" data-device-action="revoke" data-device-id="${escapeHtml(device.id)}">Revoke</button>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+};
+
 const openAppsModal = () => {
   if (!isBotAppManagerEnabled()) {
     notify("Enable Developer Mode to manage bot apps.");
@@ -1971,6 +2682,10 @@ const openSettingsModal = () => {
   renderPasswordLoginSettings();
   renderDeveloperModeSettings();
   renderNotificationSettings();
+  renderDeviceSettings();
+  void loadDeviceSettings({ showErrors: true }).then(() => {
+    renderDeviceSettings();
+  });
 
   if (state.user) {
     displayNameInput.value = state.user.displayName;
@@ -2314,6 +3029,21 @@ const renderMessages = ({ forceScroll = false } = {}) => {
 const renderRoomHeader = () => {
   const room = getActiveRoom();
 
+  if (roomKeyButton) {
+    roomKeyButton.disabled = !room;
+    roomKeyButton.textContent = room && getRoomPassphrase(room.id) ? "Refresh Security" : "Secure Sync";
+  }
+
+  if (e2eeStatus) {
+    if (!room) {
+      e2eeStatus.textContent = "Secure messaging is always on. Select a room to continue.";
+    } else if (getRoomPassphrase(room.id)) {
+      e2eeStatus.textContent = "Secure messaging active.";
+    } else {
+      e2eeStatus.textContent = "Preparing secure channel...";
+    }
+  }
+
   if (!room) {
     activeRoomName.textContent = "Select a room";
     activeRoomMeta.textContent = "No room selected";
@@ -2383,6 +3113,15 @@ const getRoomPreviewText = room => {
   }
 
   if (room.latestMessage) {
+    const latestText = String(room.latestMessage.text || "");
+    if (isRoomKeyEnvelopeText(latestText)) {
+      return "Secure channel updated";
+    }
+
+    if (isEncryptedMessageText(latestText)) {
+      return "Secure message";
+    }
+
     const authorName = room.latestMessage.userIsBot
       ? `${room.latestMessage.username || "Unknown"} [BOT]`
       : room.latestMessage.username || "Unknown";
@@ -2459,6 +3198,7 @@ const renderRooms = ({ refreshActivePanels = true } = {}) => {
       renderPasswordLoginSettings();
       renderDeveloperModeSettings();
       renderNotificationSettings();
+      renderDeviceSettings();
     }
     syncRoomModalForRoomCount();
     return;
@@ -2493,6 +3233,7 @@ const renderRooms = ({ refreshActivePanels = true } = {}) => {
     renderPasswordLoginSettings();
     renderDeveloperModeSettings();
     renderNotificationSettings();
+    renderDeviceSettings();
   }
   syncRoomModalForRoomCount();
 };
@@ -2500,6 +3241,10 @@ const renderRooms = ({ refreshActivePanels = true } = {}) => {
 const updateRoomPreviewFromMessage = message => {
   const roomId = String(message?.roomId || "").trim();
   if (!roomId) {
+    return;
+  }
+
+  if (isRoomKeyEnvelopeText(message?.text)) {
     return;
   }
 
@@ -2753,7 +3498,8 @@ const loadDiscoverableRooms = async ({ showErrors = true } = {}) => {
 const loadRooms = async ({ showErrors = true } = {}) => {
   try {
     const data = await request("/api/rooms");
-    state.rooms = applyStoredRoomOrder(data.rooms || []);
+    const preparedRooms = await prepareRoomsForDisplay(data.rooms || []);
+    state.rooms = applyStoredRoomOrder(preparedRooms);
     renderRooms();
   } catch (error) {
     if (showErrors) {
@@ -2824,8 +3570,17 @@ const loadActiveRoomSnapshot = async ({ showErrors = true, joinSocket = true, in
     state.activeRoomAccessStatus = data.accessStatus || "none";
 
     if (includeMessages) {
-      state.messagesByRoom.set(room.id, Array.isArray(data.messages) ? data.messages : []);
+      const preparedMessages = await prepareMessagesForDisplay(Array.isArray(data.messages) ? data.messages : []);
+      state.messagesByRoom.set(room.id, preparedMessages);
       state.messageHasMoreByRoom.set(room.id, Boolean(data.messageHasMore));
+    }
+
+    if (data.canAccess && !getRoomPassphrase(room.id)) {
+      try {
+        await ensureRoomKeyAvailable({ roomId: room.id, forceRotate: false, allowCreate: false });
+      } catch (error) {
+        // Key sync may fail transiently; UI will keep showing pending status.
+      }
     }
     state.membersByRoom.set(room.id, Array.isArray(data.members) ? data.members : []);
     state.pendingByRoom.set(room.id, Array.isArray(data.pendingUsers) ? data.pendingUsers : []);
@@ -2871,6 +3626,82 @@ const sendMessageViaHttp = async ({ roomId, text }) => {
     body: JSON.stringify({ text })
   });
   return data.message || null;
+};
+
+const sendSystemEnvelopeMessage = async ({ roomId, text }) => {
+  if (socket.connected) {
+    try {
+      const ack = await emitWithAck("message:send", { roomId, text });
+      return ack?.message || null;
+    } catch (error) {
+      const fallback = await sendMessageViaHttp({ roomId, text });
+      return fallback;
+    }
+  }
+
+  return sendMessageViaHttp({ roomId, text });
+};
+
+const fetchRoomE2EEPublicKeys = async roomId => {
+  const response = await request(`/api/rooms/${encodeURIComponent(roomId)}/e2ee/public-keys`);
+  return Array.isArray(response?.keys) ? response.keys : [];
+};
+
+const syncRoomKeyToRoomMembers = async ({ roomId, roomKeyBase64 }) => {
+  const normalizedRoomId = String(roomId || "").trim();
+  const normalizedRoomKeyBase64 = String(roomKeyBase64 || "").trim();
+  if (!normalizedRoomId || !normalizedRoomKeyBase64) {
+    return;
+  }
+
+  const recipients = await fetchRoomE2EEPublicKeys(normalizedRoomId);
+  const recipientEntries = recipients.filter(entry => {
+    const userId = String(entry?.userId || "").trim();
+    const publicKey = String(entry?.publicKey || "").trim();
+    return userId && publicKey;
+  });
+
+  await Promise.all(
+    recipientEntries.map(async recipient => {
+      const envelopeText = await buildRoomKeyEnvelopePayload({
+        roomId: normalizedRoomId,
+        roomKeyBase64: normalizedRoomKeyBase64,
+        recipientUserId: recipient.userId,
+        recipientPublicKey: recipient.publicKey
+      });
+      await sendSystemEnvelopeMessage({ roomId: normalizedRoomId, text: envelopeText });
+    })
+  );
+};
+
+const ensureRoomKeyAvailable = async ({ roomId, forceRotate = false, allowCreate = true, syncExisting = false } = {}) => {
+  const normalizedRoomId = String(roomId || "").trim();
+  if (!normalizedRoomId) {
+    throw new Error("roomId is required");
+  }
+
+  await ensureE2EEIdentityRegistration();
+
+  if (!forceRotate) {
+    const existing = getRoomPassphrase(normalizedRoomId);
+    if (existing) {
+      if (syncExisting) {
+        await syncRoomKeyToRoomMembers({ roomId: normalizedRoomId, roomKeyBase64: existing });
+      }
+      return existing;
+    }
+
+    if (!allowCreate) {
+      return "";
+    }
+  }
+
+  const roomKeyBytes = window.crypto.getRandomValues(new Uint8Array(32));
+  const roomKeyBase64 = bytesToBase64(roomKeyBytes);
+  setRoomPassphrase({ roomId: normalizedRoomId, passphrase: roomKeyBase64 });
+  await syncRoomKeyToRoomMembers({ roomId: normalizedRoomId, roomKeyBase64 });
+
+  return roomKeyBase64;
 };
 
 const sendMessage = async ({ roomId, text }) => {
@@ -2989,7 +3820,7 @@ const loadOlderMessagesForActiveRoom = async () => {
     query.set("beforeId", String(oldestMessage.id));
 
     const data = await request(`/api/rooms/${roomId}/messages?${query.toString()}`);
-    const olderMessages = Array.isArray(data.messages) ? data.messages : [];
+    const olderMessages = await prepareMessagesForDisplay(Array.isArray(data.messages) ? data.messages : []);
     state.messageHasMoreByRoom.set(roomId, Boolean(data.hasMore));
 
     const added = prependOlderMessagesToState({
@@ -3066,10 +3897,17 @@ const processMessageSendQueue = async () => {
       if (!mergedText) {
         continue;
       }
-      if (mergedText.length > 2000) {
+      if (mergedText.length > MESSAGE_TEXT_MAX_LENGTH) {
         notify("Message is too long after adding attachment links. Remove some attachments.");
         continue;
       }
+
+      const roomKeyBase64 = await ensureRoomKeyAvailable({ roomId: nextMessage.roomId });
+
+      const encryptedText = await encryptRoomMessageText({
+        plaintext: mergedText,
+        roomKeyBase64
+      });
 
       optimisticMessage = {
         id: `tmp-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
@@ -3090,26 +3928,27 @@ const processMessageSendQueue = async () => {
 
       const result = await sendMessage({
         roomId: nextMessage.roomId,
-        text: mergedText
+        text: encryptedText
       });
 
       if (result?.message) {
+        const preparedResultMessage = await prepareMessageForDisplay(result.message);
         const optimisticId = String(optimisticMessage?.id || "");
         const replaced = optimisticMessage
           ? replaceMessageInState({
               roomId: nextMessage.roomId,
               targetMessageId: optimisticMessage.id,
-              nextMessage: result.message
+              nextMessage: preparedResultMessage
             })
           : false;
-        const added = replaced ? false : addMessageToState(result.message);
+        const added = replaced ? false : addMessageToState(preparedResultMessage);
 
-        if ((replaced || added) && String(result.message.roomId) === String(state.activeRoomId)) {
+        if ((replaced || added) && String(preparedResultMessage.roomId) === String(state.activeRoomId)) {
           if (replaced && optimisticId) {
             const patched = replaceRenderedMessageTile({
-              roomId: result.message.roomId,
+              roomId: preparedResultMessage.roomId,
               targetMessageId: optimisticId,
-              nextMessage: result.message,
+              nextMessage: preparedResultMessage,
               forceScroll: true
             });
             if (!patched) {
@@ -3122,7 +3961,7 @@ const processMessageSendQueue = async () => {
           }
         }
 
-        updateRoomPreviewFromMessage(result.message);
+        updateRoomPreviewFromMessage(preparedResultMessage);
       }
 
       if (result?.transport === "http") {
@@ -3171,20 +4010,28 @@ const submitComposerEdit = async () => {
     return false;
   }
 
+  const roomKeyBase64 = await ensureRoomKeyAvailable({ roomId: targetRoomId });
+
+  const encryptedText = await encryptRoomMessageText({
+    plaintext: text,
+    roomKeyBase64
+  });
+
   messageEditBusy = true;
   syncComposerActionState();
   try {
     const result = await editMessageById({
       roomId: targetRoomId,
       messageId: targetMessageId,
-      text
+      text: encryptedText
     });
 
     if (!result?.message) {
       throw new Error("Unable to edit message");
     }
 
-    applyEditedMessageUpdate(result.message);
+    const preparedResultMessage = await prepareMessageForDisplay(result.message);
+    applyEditedMessageUpdate(preparedResultMessage);
     messageInput.value = "";
     syncMessageInputHeight();
     stopLocalTyping({ emit: true });
@@ -3239,20 +4086,29 @@ const queueComposerMessage = () => {
   return true;
 };
 
-const bootAuthenticated = async () => {
+const bootAuthenticated = async ({ generatedAccountHash = "" } = {}) => {
   const data = await request("/api/me");
   state.user = data.user;
-  state.rooms = applyStoredRoomOrder(data.rooms || []);
+  state.devices = [];
+  loadRoomKeysForUser();
+  await ensureE2EEIdentityRegistration();
+  const preparedRooms = await prepareRoomsForDisplay(data.rooms || []);
+  state.rooms = applyStoredRoomOrder(preparedRooms);
   state.botApps = [];
   state.botTokensById = new Map();
   loadNotificationPreferences();
-  setGeneratedAccountHash("");
+  setGeneratedAccountHash(generatedAccountHash);
   renderAccountHashSettings();
   renderPasswordLoginSettings();
   renderDeveloperModeSettings();
   renderNotificationSettings();
+  await loadDeviceSettings({ showErrors: false });
+  renderDeviceSettings();
   renderManageAppsButton();
 
+  if (bootView) {
+    bootView.classList.add("hidden");
+  }
   authView.classList.add("hidden");
   appView.classList.remove("hidden");
 
@@ -3266,14 +4122,39 @@ const bootAuthenticated = async () => {
   }
 };
 
-oauthButton.addEventListener("click", () => {
-  window.location.href = "/auth/login";
+accountCreateForm.addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const username = String(accountCreateUsernameInput.value || "").trim();
+  const deviceLabel = String(accountCreateDeviceLabelInput?.value || "").trim();
+  if (!username) {
+    notify("Username is required");
+    return;
+  }
+
+  accountCreateButton.disabled = true;
+  try {
+    const result = await request("/auth/account/create", {
+      method: "POST",
+      body: JSON.stringify({ username, deviceLabel })
+    });
+
+    accountCreateForm.reset();
+    await bootAuthenticated({ generatedAccountHash: result.accountHash || "" });
+    openAccountHexModal({ accountHash: result.accountHash || "", user: result.user || null });
+    notify("Account created. Save your account hex now.");
+  } catch (error) {
+    notify(error.message || "Unable to create account");
+  } finally {
+    accountCreateButton.disabled = false;
+  }
 });
 
 accountHashLoginForm.addEventListener("submit", async event => {
   event.preventDefault();
 
   const accountHash = String(accountHashLoginInput.value || "").trim();
+  const deviceLabel = String(accountHashDeviceLabelInput?.value || "").trim();
   if (!accountHash) {
     notify("Account hash is required");
     return;
@@ -3283,7 +4164,7 @@ accountHashLoginForm.addEventListener("submit", async event => {
   try {
     await request("/auth/account-hash/login", {
       method: "POST",
-      body: JSON.stringify({ accountHash })
+      body: JSON.stringify({ accountHash, deviceLabel })
     });
 
     accountHashLoginForm.reset();
@@ -3296,32 +4177,34 @@ accountHashLoginForm.addEventListener("submit", async event => {
   }
 });
 
-passwordLoginForm.addEventListener("submit", async event => {
-  event.preventDefault();
+if (passwordLoginForm && passwordLoginEmailInput && passwordLoginPasswordInput && passwordLoginButton) {
+  passwordLoginForm.addEventListener("submit", async event => {
+    event.preventDefault();
 
-  const email = String(passwordLoginEmailInput.value || "").trim().toLowerCase();
-  const password = String(passwordLoginPasswordInput.value || "");
-  if (!email || !password) {
-    notify("Email and password are required");
-    return;
-  }
+    const email = String(passwordLoginEmailInput.value || "").trim().toLowerCase();
+    const password = String(passwordLoginPasswordInput.value || "");
+    if (!email || !password) {
+      notify("Email and password are required");
+      return;
+    }
 
-  passwordLoginButton.disabled = true;
-  try {
-    await request("/auth/password/login", {
-      method: "POST",
-      body: JSON.stringify({ email, password })
-    });
+    passwordLoginButton.disabled = true;
+    try {
+      await request("/auth/password/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password })
+      });
 
-    passwordLoginForm.reset();
-    await bootAuthenticated();
-    notify("Logged in with email and password");
-  } catch (error) {
-    notify(error.message || "Unable to login with email and password");
-  } finally {
-    passwordLoginButton.disabled = false;
-  }
-});
+      passwordLoginForm.reset();
+      await bootAuthenticated();
+      notify("Logged in with email and password");
+    } catch (error) {
+      notify(error.message || "Unable to login with email and password");
+    } finally {
+      passwordLoginButton.disabled = false;
+    }
+  });
+}
 
 logoutButton.addEventListener("click", async () => {
   try {
@@ -3333,6 +4216,34 @@ logoutButton.addEventListener("click", async () => {
     notify(error.message);
   }
 });
+
+if (roomKeyButton) {
+  roomKeyButton.addEventListener("click", async () => {
+    const room = getActiveRoom();
+    if (!room) {
+      notify("Select a room first");
+      return;
+    }
+
+    try {
+      const hadExistingKey = Boolean(getRoomPassphrase(room.id));
+      await ensureRoomKeyAvailable({ roomId: room.id, forceRotate: hadExistingKey });
+      renderRoomHeader();
+      await loadActiveRoomSnapshot({ showErrors: false, joinSocket: false, includeMessages: true });
+      notify(hadExistingKey ? "Security refreshed for this room" : "Secure sync completed");
+    } catch (error) {
+      notify(error.message || "Unable to refresh secure sync");
+    }
+  });
+}
+
+if (openRoomKeySettingsButton) {
+  openRoomKeySettingsButton.addEventListener("click", () => {
+    if (roomKeyButton) {
+      roomKeyButton.click();
+    }
+  });
+}
 
 generateAccountHashButton.addEventListener("click", async () => {
   if (!state.user) {
@@ -3388,66 +4299,141 @@ disableAccountHashButton.addEventListener("click", async () => {
   }
 });
 
-settingsPasswordForm.addEventListener("submit", async event => {
-  event.preventDefault();
+if (deviceSettingsForm && maxDevicesInput && saveMaxDevicesButton) {
+  deviceSettingsForm.addEventListener("submit", async event => {
+    event.preventDefault();
 
-  const password = String(settingsPasswordInput.value || "");
-  const currentPassword = String(settingsCurrentPasswordInput.value || "");
-  const requiresCurrentPassword = Boolean(state.user?.hasPasswordLogin);
-  if (!password) {
-    notify("Password is required");
-    return;
-  }
-  if (requiresCurrentPassword && !currentPassword) {
-    notify("Current password is required");
-    return;
-  }
+    const maxDevices = Number(maxDevicesInput.value);
+    if (!Number.isFinite(maxDevices)) {
+      notify("Max devices must be a number");
+      return;
+    }
 
-  settingsPasswordSubmit.disabled = true;
-  try {
-    const result = await request("/api/me/password", {
-      method: "POST",
-      body: JSON.stringify({ password, currentPassword })
-    });
-    state.user = result.user;
-    settingsPasswordForm.reset();
-    renderPasswordLoginSettings();
-    notify(requiresCurrentPassword ? "Password updated" : "Password login enabled");
-  } catch (error) {
-    notify(error.message || "Unable to enable password login");
-  } finally {
-    settingsPasswordSubmit.disabled = false;
-  }
-});
+    saveMaxDevicesButton.disabled = true;
+    try {
+      const result = await request("/api/me/devices/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ maxDevices })
+      });
+      state.user = result.user;
+      await loadDeviceSettings({ showErrors: false });
+      renderDeviceSettings();
+      notify("Device limit updated");
+    } catch (error) {
+      notify(error.message || "Unable to update device limit");
+    } finally {
+      saveMaxDevicesButton.disabled = false;
+    }
+  });
+}
 
-disablePasswordLoginButton.addEventListener("click", async () => {
-  const confirmed = window.confirm("Disable email/password login for this account?");
-  if (!confirmed) {
-    return;
-  }
+if (deviceList) {
+  deviceList.addEventListener("click", async event => {
+    const button = event.target?.closest("button[data-device-action='revoke']");
+    if (!button) {
+      return;
+    }
 
-  const currentPassword = String(settingsCurrentPasswordInput.value || "");
-  if (!currentPassword) {
-    notify("Current password is required");
-    return;
-  }
+    const targetSessionId = String(button.getAttribute("data-device-id") || "").trim();
+    if (!targetSessionId) {
+      return;
+    }
 
-  disablePasswordLoginButton.disabled = true;
-  try {
-    const result = await request("/api/me/password", {
-      method: "DELETE",
-      body: JSON.stringify({ currentPassword })
-    });
-    state.user = result.user;
-    settingsPasswordForm.reset();
-    renderPasswordLoginSettings();
-    notify("Password login disabled");
-  } catch (error) {
-    notify(error.message || "Unable to disable password login");
-  } finally {
-    disablePasswordLoginButton.disabled = false;
-  }
-});
+    const confirmed = window.confirm("Revoke this device session?");
+    if (!confirmed) {
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      const result = await request(`/api/me/devices/${encodeURIComponent(targetSessionId)}`, {
+        method: "DELETE"
+      });
+
+      if (result.revokedCurrent) {
+        notify("Current device revoked. Please sign in again.");
+        window.location.href = "/";
+        return;
+      }
+
+      await loadDeviceSettings({ showErrors: false });
+      renderDeviceSettings();
+      notify("Device revoked");
+    } catch (error) {
+      notify(error.message || "Unable to revoke device");
+      button.disabled = false;
+    }
+  });
+}
+
+if (
+  settingsPasswordForm &&
+  settingsPasswordInput &&
+  settingsCurrentPasswordInput &&
+  settingsPasswordSubmit &&
+  disablePasswordLoginButton
+) {
+  settingsPasswordForm.addEventListener("submit", async event => {
+    event.preventDefault();
+
+    const password = String(settingsPasswordInput.value || "");
+    const currentPassword = String(settingsCurrentPasswordInput.value || "");
+    const requiresCurrentPassword = Boolean(state.user?.hasPasswordLogin);
+    if (!password) {
+      notify("Password is required");
+      return;
+    }
+    if (requiresCurrentPassword && !currentPassword) {
+      notify("Current password is required");
+      return;
+    }
+
+    settingsPasswordSubmit.disabled = true;
+    try {
+      const result = await request("/api/me/password", {
+        method: "POST",
+        body: JSON.stringify({ password, currentPassword })
+      });
+      state.user = result.user;
+      settingsPasswordForm.reset();
+      renderPasswordLoginSettings();
+      notify(requiresCurrentPassword ? "Password updated" : "Password login enabled");
+    } catch (error) {
+      notify(error.message || "Unable to enable password login");
+    } finally {
+      settingsPasswordSubmit.disabled = false;
+    }
+  });
+
+  disablePasswordLoginButton.addEventListener("click", async () => {
+    const confirmed = window.confirm("Disable email/password login for this account?");
+    if (!confirmed) {
+      return;
+    }
+
+    const currentPassword = String(settingsCurrentPasswordInput.value || "");
+    if (!currentPassword) {
+      notify("Current password is required");
+      return;
+    }
+
+    disablePasswordLoginButton.disabled = true;
+    try {
+      const result = await request("/api/me/password", {
+        method: "DELETE",
+        body: JSON.stringify({ currentPassword })
+      });
+      state.user = result.user;
+      settingsPasswordForm.reset();
+      renderPasswordLoginSettings();
+      notify("Password login disabled");
+    } catch (error) {
+      notify(error.message || "Unable to disable password login");
+    } finally {
+      disablePasswordLoginButton.disabled = false;
+    }
+  });
+}
 
 openRoomModalButton.addEventListener("click", () => {
   openRoomModal({ locked: state.rooms.length === 0 });
@@ -3489,6 +4475,45 @@ roomModalCloseButton.addEventListener("click", () => {
 roomModalBackdrop.addEventListener("click", () => {
   closeRoomModal();
 });
+
+if (accountHexModalCloseButton) {
+  accountHexModalCloseButton.addEventListener("click", () => {
+    closeAccountHexModal();
+  });
+}
+
+if (accountHexModalBackdrop) {
+  accountHexModalBackdrop.addEventListener("click", () => {
+    closeAccountHexModal();
+  });
+}
+
+if (accountHexModalCopyButton) {
+  accountHexModalCopyButton.addEventListener("click", async () => {
+    const copied = await copyText(latestCreatedAccountHexValue);
+    if (copied) {
+      notify("Account hex copied");
+      return;
+    }
+
+    notify("Unable to copy account hex");
+  });
+}
+
+if (accountHexModalDownloadButton) {
+  accountHexModalDownloadButton.addEventListener("click", () => {
+    const downloaded = downloadAccountHexTextFile({
+      accountHash: latestCreatedAccountHexValue,
+      user: state.user
+    });
+    if (downloaded) {
+      notify("Account hex TXT downloaded");
+      return;
+    }
+
+    notify("No account hex available to download");
+  });
+}
 
 settingsModalCloseButton.addEventListener("click", () => {
   closeSettingsModal();
@@ -4756,8 +5781,9 @@ socket.on("connect_error", () => {
   notify("Realtime socket failed. Using HTTP fallback.");
 });
 
-socket.on("rooms:update", rooms => {
-  const nextRooms = applyStoredRoomOrder(Array.isArray(rooms) ? rooms : []);
+socket.on("rooms:update", async rooms => {
+  const preparedRooms = await prepareRoomsForDisplay(Array.isArray(rooms) ? rooms : []);
+  const nextRooms = applyStoredRoomOrder(preparedRooms);
   if (getRoomListSignature(nextRooms) === getRoomListSignature(state.rooms)) {
     return;
   }
@@ -4803,12 +5829,13 @@ socket.on("rooms:update", rooms => {
   }
 });
 
-socket.on("room:history", payload => {
+socket.on("room:history", async payload => {
   if (!payload?.roomId) {
     return;
   }
 
-  state.messagesByRoom.set(payload.roomId, Array.isArray(payload.messages) ? payload.messages : []);
+  const preparedMessages = await prepareMessagesForDisplay(Array.isArray(payload.messages) ? payload.messages : []);
+  state.messagesByRoom.set(payload.roomId, preparedMessages);
   if (typeof payload.hasMore === "boolean") {
     state.messageHasMoreByRoom.set(payload.roomId, payload.hasMore);
   }
@@ -4819,18 +5846,23 @@ socket.on("room:history", payload => {
   }
 });
 
-socket.on("message:new", message => {
+socket.on("message:new", async message => {
   if (!message?.roomId) {
     return;
   }
 
-  const reconciledOptimisticId = reconcileOwnOptimisticMessage(message);
+  const preparedMessage = await prepareMessageForDisplay(message);
+  if (!preparedMessage) {
+    return;
+  }
+
+  const reconciledOptimisticId = reconcileOwnOptimisticMessage(preparedMessage);
   if (reconciledOptimisticId) {
-    if (String(message.roomId) === String(state.activeRoomId)) {
+    if (String(preparedMessage.roomId) === String(state.activeRoomId)) {
       const patched = replaceRenderedMessageTile({
-        roomId: message.roomId,
+        roomId: preparedMessage.roomId,
         targetMessageId: reconciledOptimisticId,
-        nextMessage: message,
+        nextMessage: preparedMessage,
         forceScroll: true
       });
       if (!patched) {
@@ -4838,36 +5870,40 @@ socket.on("message:new", message => {
         scrollMessageListToBottom({ smooth: true });
       }
     }
-    updateRoomPreviewFromMessage(message);
+    updateRoomPreviewFromMessage(preparedMessage);
     return;
   }
 
-  const added = addMessageToState(message);
+  const added = addMessageToState(preparedMessage);
   if (!added) {
-    updateRoomPreviewFromMessage(message);
+    updateRoomPreviewFromMessage(preparedMessage);
     return;
   }
 
-  dispatchDesktopNotificationForMessage(message);
+  dispatchDesktopNotificationForMessage(preparedMessage);
 
-  if (String(message.roomId) === String(state.activeRoomId)) {
+  if (String(preparedMessage.roomId) === String(state.activeRoomId)) {
     renderMessages();
-    if (message.userId === state.user?.id) {
+    if (preparedMessage.userId === state.user?.id) {
       scrollMessageListToBottom({ smooth: true });
     }
     updateComposerPlaceholder();
   }
 
-  updateRoomPreviewFromMessage(message);
+  updateRoomPreviewFromMessage(preparedMessage);
 });
 
-socket.on("message:update", payload => {
+socket.on("message:update", async payload => {
   const message = payload?.message || payload;
   if (!message?.roomId || !message?.id) {
     return;
   }
 
-  applyEditedMessageUpdate(message);
+  const preparedMessage = await prepareMessageForDisplay(message);
+  if (!preparedMessage) {
+    return;
+  }
+  applyEditedMessageUpdate(preparedMessage);
 });
 
 socket.on("typing:update", payload => {
@@ -4938,10 +5974,38 @@ socket.on("room:presence", payload => {
     return;
   }
 
-  state.membersByRoom.set(payload.roomId, Array.isArray(payload.members) ? payload.members : []);
-  state.pendingByRoom.set(payload.roomId, Array.isArray(payload.pendingUsers) ? payload.pendingUsers : []);
+  const roomId = String(payload.roomId || "").trim();
+  const nextMembers = Array.isArray(payload.members) ? payload.members : [];
+  const memberSignature = nextMembers
+    .map(member => String(member?.id || "").trim())
+    .filter(Boolean)
+    .sort()
+    .join(",");
 
-  if (payload.roomId === state.activeRoomId) {
+  state.membersByRoom.set(roomId, nextMembers);
+  state.pendingByRoom.set(roomId, Array.isArray(payload.pendingUsers) ? payload.pendingUsers : []);
+
+  const room = state.rooms.find(entry => String(entry.id || "") === roomId) || null;
+  const isCurrentUserOwner = String(payload.ownerUserId || room?.ownerUserId || "") === String(state.user?.id || "");
+  if (isCurrentUserOwner && memberSignature) {
+    const roomKeyBase64 = getRoomPassphrase(roomId);
+    if (roomKeyBase64) {
+      const now = Date.now();
+      const previousResyncState = roomKeyResyncStateByRoomId.get(roomId) || { memberSignature: "", lastSyncedAt: 0 };
+      const membersChanged = previousResyncState.memberSignature !== memberSignature;
+      const beyondCooldown = now - Number(previousResyncState.lastSyncedAt || 0) >= ROOM_KEY_RESYNC_MIN_INTERVAL_MS;
+      if (membersChanged && beyondCooldown) {
+        roomKeyResyncStateByRoomId.set(roomId, {
+          memberSignature,
+          lastSyncedAt: now
+        });
+
+        ensureRoomKeyAvailable({ roomId, forceRotate: false, allowCreate: false, syncExisting: true }).catch(() => {});
+      }
+    }
+  }
+
+  if (roomId === state.activeRoomId) {
     renderMembers();
     renderRoomHeader();
     updateComposerPlaceholder();
@@ -4961,13 +6025,18 @@ for (const element of document.querySelectorAll("form, input, textarea")) {
 }
 
 (async () => {
+  setAuthMode("choice");
   try {
     await bootAuthenticated();
   } catch (error) {
+    if (bootView) {
+      bootView.classList.add("hidden");
+    }
     if (error.status !== 401) {
       notify(error.message);
     }
 
+    setAuthMode("choice");
     authView.classList.remove("hidden");
     appView.classList.add("hidden");
     socket.disconnect();

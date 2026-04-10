@@ -25,8 +25,6 @@ const registerRoutes = ({
   app,
   io,
   requireAuth,
-  fetchSignupUrl,
-  decodeJwtPayload,
   setSessionCookie,
   clearSessionCookie,
   realtime,
@@ -39,6 +37,24 @@ const registerRoutes = ({
     }
 
     return Math.max(1, Math.min(200, Math.floor(parsed)));
+  };
+
+  const resolveDeviceLabel = req => {
+    const requested = String(req.body?.deviceLabel || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (requested) {
+      return requested.slice(0, 48);
+    }
+
+    const userAgent = String(req.headers["user-agent"] || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (userAgent) {
+      return userAgent.slice(0, 48);
+    }
+
+    return "Unnamed device";
   };
 
   const isBotUser = req => Boolean(req?.user?.isBot);
@@ -74,13 +90,20 @@ const registerRoutes = ({
     return false;
   };
 
-  app.get("/auth/login", async (req, res) => {
+  app.post("/auth/account/create", async (req, res) => {
+    const username = String(req.body?.username || "").trim();
+    if (!username) {
+      return res.status(400).json({ error: "Username is required" });
+    }
+
     try {
-      const signupUrl = await fetchSignupUrl(req);
-      res.redirect(signupUrl);
+      const result = await store.createAccountWithAccountHash({ username });
+      const session = await store.createSession(result.user.id, { deviceLabel: resolveDeviceLabel(req) });
+      setSessionCookie(res, session.id);
+      res.status(201).json({ ok: true, user: result.user, accountHash: result.accountHash });
     } catch (error) {
-      console.error("[ERROR] OAuth login redirect failed", error);
-      res.status(502).send("Unable to start OAuth login flow");
+      const statusCode = error.code === "DEVICE_LIMIT_REACHED" ? 409 : 400;
+      res.status(statusCode).json({ error: error.message || "Unable to create account" });
     }
   });
 
@@ -96,52 +119,12 @@ const registerRoutes = ({
         return res.status(401).json({ error: "Invalid account hash" });
       }
 
-      const session = await store.createSession(user.id);
+      const session = await store.createSession(user.id, { deviceLabel: resolveDeviceLabel(req) });
       setSessionCookie(res, session.id);
       res.json({ ok: true, user });
     } catch (error) {
-      console.error("[ERROR] Account hash login failed", error);
-      res.status(400).json({ error: error.message || "Unable to login with account hash" });
-    }
-  });
-
-  app.post("/auth/password/login", async (req, res) => {
-    const email = String(req.body?.email || "").trim().toLowerCase();
-    const password = String(req.body?.password || "");
-    if (!email || !password) {
-      return res.status(400).json({ error: "Email and password are required" });
-    }
-
-    try {
-      const user = await store.authenticateUserByPassword({ email, password });
-      if (!user) {
-        return res.status(401).json({ error: "Invalid email or password" });
-      }
-
-      const session = await store.createSession(user.id);
-      setSessionCookie(res, session.id);
-      res.json({ ok: true, user });
-    } catch (error) {
-      console.error("[ERROR] Password login failed", error);
-      res.status(400).json({ error: error.message || "Unable to login with email and password" });
-    }
-  });
-
-  app.get("/auth/callback", async (req, res) => {
-    const token = req.query.sso_token;
-    if (!token) {
-      return res.status(400).send("Missing sso_token in callback");
-    }
-
-    try {
-      const payload = decodeJwtPayload(token);
-      const user = await store.upsertOAuthUser(payload);
-      const session = await store.createSession(user.id);
-      setSessionCookie(res, session.id);
-      res.redirect("/");
-    } catch (error) {
-      console.error("[ERROR] OAuth callback failed", error);
-      res.status(401).send("OAuth callback processing failed");
+      const statusCode = error.code === "DEVICE_LIMIT_REACHED" ? 409 : 400;
+      res.status(statusCode).json({ error: error.message || "Unable to login with account hash" });
     }
   });
 
@@ -158,6 +141,98 @@ const registerRoutes = ({
       user: req.user,
       rooms: realtime.getRoomsPayloadForUser(req.user.id)
     });
+  });
+
+  app.put("/api/me/e2ee/public-key", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
+    const publicKey = String(req.body?.publicKey || "").trim();
+    if (!publicKey) {
+      return res.status(400).json({ error: "publicKey is required" });
+    }
+
+    try {
+      const user = await store.updateUserE2EEPublicKey({ userId: req.user.id, publicKey });
+      res.json({ user });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to register E2EE public key" });
+    }
+  });
+
+  app.get("/api/rooms/:roomId/e2ee/public-keys", requireAuth, (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
+    const roomId = String(req.params.roomId || "").trim();
+    if (!roomId) {
+      return res.status(400).json({ error: "Room id is required" });
+    }
+
+    try {
+      const keys = store.getRoomE2EEPublicKeys({ roomId, requesterUserId: req.user.id });
+      res.json({ keys });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to fetch room E2EE keys" });
+    }
+  });
+
+  app.get("/api/me/devices", requireAuth, (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
+    const devices = store.listUserDevices({
+      userId: req.user.id,
+      currentSessionId: req.sessionId
+    });
+
+    res.json({
+      devices,
+      maxDevices: req.user.maxDevices
+    });
+  });
+
+  app.patch("/api/me/devices/settings", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
+    const maxDevices = Number(req.body?.maxDevices);
+    if (!Number.isFinite(maxDevices)) {
+      return res.status(400).json({ error: "maxDevices must be a number" });
+    }
+
+    try {
+      const user = await store.setUserMaxDevices({ userId: req.user.id, maxDevices });
+      res.json({ user });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to update device settings" });
+    }
+  });
+
+  app.delete("/api/me/devices/:sessionId", requireAuth, async (req, res) => {
+    if (!requireHumanUser(req, res)) {
+      return;
+    }
+
+    const targetSessionId = String(req.params?.sessionId || "").trim();
+    if (!targetSessionId) {
+      return res.status(400).json({ error: "sessionId is required" });
+    }
+
+    try {
+      const result = await store.revokeUserDeviceSession({ userId: req.user.id, sessionId: targetSessionId });
+      const revokedCurrent = targetSessionId === String(req.sessionId || "");
+      if (revokedCurrent) {
+        clearSessionCookie(res);
+      }
+      res.json({ ok: true, revokedSessionId: result.revokedSessionId, revokedCurrent });
+    } catch (error) {
+      res.status(400).json({ error: error.message || "Unable to revoke device" });
+    }
   });
 
   app.post("/api/me/account-hash", requireAuth, async (req, res) => {
@@ -183,43 +258,6 @@ const registerRoutes = ({
       res.json({ ok: true, user });
     } catch (error) {
       res.status(400).json({ error: error.message || "Unable to disable account hash login" });
-    }
-  });
-
-  app.post("/api/me/password", requireAuth, async (req, res) => {
-    if (!requireHumanUser(req, res)) {
-      return;
-    }
-
-    const password = String(req.body?.password || "");
-    const currentPassword = String(req.body?.currentPassword || "");
-    if (!password) {
-      return res.status(400).json({ error: "Password is required" });
-    }
-
-    try {
-      const user = await store.setUserPasswordLogin({ userId: req.user.id, password, currentPassword });
-      res.status(201).json({ user });
-    } catch (error) {
-      res.status(400).json({ error: error.message || "Unable to enable password login" });
-    }
-  });
-
-  app.delete("/api/me/password", requireAuth, async (req, res) => {
-    if (!requireHumanUser(req, res)) {
-      return;
-    }
-
-    const currentPassword = String(req.body?.currentPassword || "");
-    if (!currentPassword) {
-      return res.status(400).json({ error: "Current password is required" });
-    }
-
-    try {
-      const user = await store.disableUserPasswordLogin({ userId: req.user.id, currentPassword });
-      res.json({ ok: true, user });
-    } catch (error) {
-      res.status(400).json({ error: error.message || "Unable to disable password login" });
     }
   });
 

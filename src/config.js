@@ -5,17 +5,31 @@ const toPositiveNumber = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const toBoolean = (value, fallback = false) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return Boolean(fallback);
+  }
+
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return Boolean(fallback);
+};
+
 const PORT = Number(process.env.PORT || 8070);
 const HOST = process.env.HOST || "0.0.0.0";
+const NODE_ENV = String(process.env.NODE_ENV || "development").trim().toLowerCase() || "development";
+const IS_PRODUCTION = NODE_ENV === "production";
+const TRUST_PROXY = toBoolean(process.env.TRUST_PROXY, true);
 const APP_BASE_URL = process.env.APP_BASE_URL
   ? String(process.env.APP_BASE_URL).trim().replace(/\/+$/, "")
   : "";
-const OAUTH_BASE = process.env.ALABS_WORKER_BASE || "https://oauth2.axrxvm.workers.dev";
-const OAUTH_APP_ID = process.env.ALABS_APP_ID || "AChat";
-const OAUTH_PROVIDERS = (process.env.ALABS_PROVIDERS || "discord,google,github")
-  .split(",")
-  .map(provider => provider.trim())
-  .filter(Boolean);
 const SESSION_COOKIE = "achat_session";
 const SESSION_COOKIE_MAX_AGE_DAYS = Math.max(1, toPositiveNumber(process.env.SESSION_COOKIE_MAX_AGE_DAYS, 30));
 const SESSION_COOKIE_MAX_AGE_SECONDS = SESSION_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60;
@@ -34,10 +48,10 @@ const CATBOX_MAX_FILES_PER_UPLOAD = Math.max(1, toPositiveNumber(process.env.CAT
 module.exports = {
   PORT,
   HOST,
+  NODE_ENV,
+  IS_PRODUCTION,
+  TRUST_PROXY,
   APP_BASE_URL,
-  OAUTH_BASE,
-  OAUTH_APP_ID,
-  OAUTH_PROVIDERS,
   SESSION_COOKIE,
   SESSION_COOKIE_MAX_AGE_DAYS,
   SESSION_COOKIE_MAX_AGE_SECONDS,

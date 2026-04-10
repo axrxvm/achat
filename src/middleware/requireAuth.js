@@ -54,6 +54,7 @@ const createRequireAuth = ({
 
     await touchSession(sessionId);
     req.sessionId = sessionId;
+    req.session = sessionUser.session;
     req.user = sessionUser.user;
     req.authType = "session";
     req.isBotUser = Boolean(sessionUser.user?.isBot);

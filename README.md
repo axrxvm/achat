@@ -1,12 +1,13 @@
 # AChat
 
-A minimal Discord-like real-time chat app built with Bun, Express, and Socket.IO.
+A real-time chat app built with Bun, Express, and Socket.IO, now centered around account-hex identity and client-side E2EE room keys.
 
 ## Features
 
-- OAuth login flow using ALabs OAuth Worker API
-- Optional account-hash login (generated as `word(optionalNumber)-word-word-word-number`)
-- Optional email + password login (enabled per-user in settings; password hashes only)
+- Account creation with username + one-time account hex
+- Account-hex login only (`word(optionalNumber)-word-word-word-word-word-word-number-checkword`)
+- Client-side room-key E2EE for message content (AES-GCM)
+- Server-assisted multi-device sessions with per-account max-device controls
 - Optional Developer Mode with right-click copy tools for IDs/timestamps
 - Developer Mode "Manage Apps" panel for creating and managing bot users
 - Bot auth tokens (`Authorization: Bearer <token>`) for API-driven bot integrations
@@ -25,9 +26,52 @@ bun run start
 
 ## Environment
 
+- `NODE_ENV` (`production` recommended in deploy)
+- `TRUST_PROXY` (`true` behind reverse proxies/load balancers)
 - `MONGODB_MAIN_DB_URL` for users/rooms/sessions
 - `MONGODB_MESSAGE_DB_URL` for chat messages
 - `CATBOX_USER_HASH` (optional) if you want uploads tied to your Catbox account
+
+See `.env.example` for the full template.
+
+## Production Runbook
+
+1. Set environment:
+
+```bash
+cp .env.example .env
+```
+
+Fill all required DB values and set `NODE_ENV=production`.
+
+1. Start service:
+
+```bash
+bun run start
+```
+
+1. Health checks:
+
+- Liveness: `GET /healthz`
+- Readiness: `GET /readyz`
+
+1. Reverse proxy requirements:
+
+- Terminate TLS at proxy/load balancer
+- Forward `X-Forwarded-*` headers
+- Keep WebSocket upgrades enabled for Socket.IO
+
+1. Security baseline included in app:
+
+- Security headers middleware (CSP, frame deny, nosniff, referrer policy)
+- Auth endpoint rate limiting (`/auth/*`)
+- Graceful shutdown on `SIGINT`/`SIGTERM`
+
+1. Operational hygiene:
+
+- Never commit `.env` secrets to git
+- Rotate bot tokens and DB credentials if exposed
+- Keep session cookie secure by running production over HTTPS
 
 ## Bot API
 

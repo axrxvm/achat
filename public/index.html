@@ -14,57 +14,110 @@
     <link rel="stylesheet" href="./css/styles.css" />
   </head>
   <body>
-    <div id="auth-view" class="auth-view">
+    <div id="boot-view" class="boot-view" role="status" aria-live="polite">
+      <div class="boot-orb"></div>
+      <p class="boot-title">AChat</p>
+      <p class="boot-subtitle">Loading secure session...</p>
+    </div>
+
+    <div id="auth-view" class="auth-view hidden">
       <div class="auth-card">
         <div class="auth-brand">AChat</div>
-        <h1>Your Rooms, Live</h1>
-        <p>Connect, collaborate, in real-time</p>
-        <button id="oauth-login" class="primary-button">Continue with OAuth</button>
-        <div class="auth-divider" role="presentation">or</div>
-        <form id="account-hash-login-form" class="stack-form auth-hash-form" autocomplete="off">
-          <label for="account-hash-login-input">Login with Account Hash</label>
-          <input
-            id="account-hash-login-input"
-            name="accountHash"
-            placeholder="sky7-cedar-river-lotus-4821"
-            autocomplete="off"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            required
-          />
-          <button id="account-hash-login-button" type="submit" class="secondary-button">Login with Account Hash</button>
-        </form>
-        <div class="auth-divider" role="presentation">or</div>
-        <form id="password-login-form" class="stack-form auth-password-form" autocomplete="off">
-          <label for="password-login-email-input">Login with Email & Password</label>
-          <input
-            id="password-login-email-input"
-            name="email"
-            type="email"
-            placeholder="you@example.com"
-            autocomplete="email"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            required
-          />
-          <input
-            id="password-login-password-input"
-            name="password"
-            type="password"
-            placeholder="Password"
-            autocomplete="current-password"
-            required
-          />
-          <button id="password-login-button" type="submit" class="secondary-button">Login with Password</button>
-        </form>
+        <h1>Welcome</h1>
+        <p class="auth-intro">Private chat, no clutter.</p>
+
+        <div id="auth-choice-panel" class="auth-choice-panel">
+          <button id="auth-open-login" type="button" class="primary-button">Login</button>
+          <button id="auth-open-register" type="button" class="secondary-button">Register</button>
+        </div>
+
+        <section id="auth-login-panel" class="auth-mode-panel hidden" aria-label="Login">
+          <form id="account-hash-login-form" class="stack-form auth-hash-form" autocomplete="off">
+            <label for="account-hash-login-input">Account Hex</label>
+            <input
+              id="account-hash-login-input"
+              name="accountHash"
+              placeholder="sky7-cedar-river-lotus-amber-forest-orchid-48219-sakura"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              required
+            />
+            <input
+              id="account-hash-device-label-input"
+              name="deviceLabel"
+              maxlength="48"
+              placeholder="Device name (optional)"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+            />
+            <button id="account-hash-login-button" type="submit" class="primary-button">Enter Chat</button>
+          </form>
+          <button id="auth-back-from-login" type="button" class="inline-button auth-back-button">Back</button>
+        </section>
+
+        <section id="auth-register-panel" class="auth-mode-panel hidden" aria-label="Register">
+          <form id="account-create-form" class="stack-form auth-create-form" autocomplete="off">
+            <label for="account-create-username-input">Username</label>
+            <input
+              id="account-create-username-input"
+              name="username"
+              maxlength="32"
+              placeholder="Choose a unique username"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              required
+            />
+            <input
+              id="account-create-device-label-input"
+              name="deviceLabel"
+              maxlength="48"
+              placeholder="Device name (optional)"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+            />
+            <button id="account-create-button" type="submit" class="primary-button">Create Account</button>
+          </form>
+          <button id="auth-back-from-register" type="button" class="inline-button auth-back-button">Back</button>
+        </section>
       </div>
       <footer class="auth-footer">
         <span>Made by Aarav Mehta</span>
         <span aria-hidden="true">|</span>
         <a href="https://github.com/axrxvm/achat" target="_blank" rel="noopener noreferrer">Github</a>
+        <span aria-hidden="true">|</span>
+        <a href="./privacy.html" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+        <span aria-hidden="true">|</span>
+        <a href="./terms.html" target="_blank" rel="noopener noreferrer">Terms of Service</a>
       </footer>
+    </div>
+
+    <div id="account-hex-modal" class="room-modal hidden" aria-hidden="true">
+      <div id="account-hex-modal-backdrop" class="room-modal__backdrop"></div>
+      <section class="room-modal__panel" role="dialog" aria-modal="true" aria-labelledby="account-hex-modal-title">
+        <header class="room-modal__header">
+          <h2 id="account-hex-modal-title">Save Your Account Hex</h2>
+          <button id="account-hex-modal-close" class="modal-close" type="button" aria-label="Close account hex modal">×</button>
+        </header>
+
+        <p class="room-modal__subtitle account-hex-modal__warning">
+          This is shown only once after registration. If you lose it, your account cannot be recovered.
+        </p>
+
+        <pre id="account-hex-modal-value" class="account-hash-display"></pre>
+
+        <div class="settings-account-hash-actions">
+          <button id="account-hex-modal-copy" type="button" class="secondary-button">Copy Hex</button>
+          <button id="account-hex-modal-download" type="button" class="primary-button">Download TXT</button>
+        </div>
+      </section>
     </div>
 
     <div id="app-view" class="app-view hidden">
@@ -93,10 +146,14 @@
           <div>
             <h2 id="active-room-name">Select a room</h2>
             <p id="active-room-meta">No room selected</p>
+            <p id="e2ee-status" class="e2ee-status">Secure channel prepares automatically for each room.</p>
           </div>
 
           <div class="chat-header__actions">
             <span id="connection-chip" class="connection-chip syncing" role="status" aria-live="polite">Connecting</span>
+            <button id="room-key-button" type="button" class="secondary-button" title="Refresh secure sync for this room">
+              Secure Sync
+            </button>
             <div class="mobile-action-group">
               <button id="mobile-rooms-toggle" type="button" class="secondary-button mobile-toggle">Rooms</button>
               <button id="mobile-members-toggle" type="button" class="secondary-button mobile-toggle">Members</button>
@@ -139,7 +196,7 @@
             id="message-input"
             name="message"
             placeholder="Message the room (Enter to send, Ctrl+Enter for newline)"
-            maxlength="2000"
+            maxlength="8192"
             autocomplete="off"
             autocapitalize="off"
             autocorrect="off"
@@ -294,7 +351,7 @@
           <section class="settings-card">
             <h3>Account Hash Login</h3>
             <p id="account-hash-status" class="settings-note">
-              Format: word(optionalNumber)-word-word-word-number. Keep it private and stored safely.
+              Format: word(optionalNumber)-word-word-word-word-word-word-number-checkword. Keep it private and stored safely.
             </p>
             <div class="settings-account-hash-actions">
               <button id="generate-account-hash" type="button" class="secondary-button">Generate Account Hash</button>
@@ -305,36 +362,32 @@
           </section>
 
           <section class="settings-card">
-            <h3>Email & Password Login</h3>
-            <p id="password-login-status" class="settings-note">
-              Enable login with email + password. Passwords are stored as secure hashes.
+            <h3>Encryption</h3>
+            <p class="settings-note">
+              Security runs automatically for each room. If a device appears out of sync, refresh secure sync.
             </p>
-            <p id="password-login-email" class="settings-note"></p>
-            <form id="settings-password-form" class="stack-form settings-password-form" autocomplete="off">
-              <label for="settings-current-password-input">Current Password</label>
-              <input
-                id="settings-current-password-input"
-                name="currentPassword"
-                type="password"
-                placeholder="Required to update/disable"
-                autocomplete="current-password"
-              />
-              <label for="settings-password-input">New Password</label>
+            <button id="open-room-key-settings" type="button" class="secondary-button">Refresh Secure Sync</button>
+          </section>
+
+          <section class="settings-card">
+            <h3>Devices</h3>
+            <p class="settings-note">Manage active device sessions and set your maximum devices.</p>
+            <form id="device-settings-form" class="stack-form" autocomplete="off">
+              <label for="max-devices-input">Max Devices</label>
               <div class="inline-field">
                 <input
-                  id="settings-password-input"
-                  name="password"
-                  type="password"
-                  placeholder="At least 8 characters"
-                  autocomplete="new-password"
-                  minlength="8"
-                  maxlength="128"
+                  id="max-devices-input"
+                  name="maxDevices"
+                  type="number"
+                  min="1"
+                  max="10"
+                  step="1"
                   required
                 />
-                <button id="settings-password-submit" type="submit" class="secondary-button">Enable</button>
+                <button id="save-max-devices" type="submit" class="secondary-button">Save</button>
               </div>
             </form>
-            <button id="disable-password-login" type="button" class="secondary-button hidden">Disable Password Login</button>
+            <div id="device-list" class="settings-room-list"></div>
           </section>
 
           <section class="settings-card danger">

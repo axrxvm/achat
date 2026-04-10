@@ -134,15 +134,27 @@ const ACCOUNT_HASH_WORDS = [
 ];
 const ACCOUNT_HASH_WORD_REGEX = /^[a-z]+$/;
 const ACCOUNT_HASH_FIRST_SEGMENT_REGEX = /^[a-z]+(?:\d{1,2})?$/;
-const ACCOUNT_HASH_NUMBER_REGEX = /^\d{3,6}$/;
+const ACCOUNT_HASH_NUMBER_REGEX = /^\d{4,6}$/;
+const LEGACY_ACCOUNT_HASH_NUMBER_REGEX = /^\d{3,6}$/;
 const ACCOUNT_HASH_DIGEST_REGEX = /^[a-f0-9]{64}$/;
 const LEGACY_ACCOUNT_HASH_WORD_COUNT_MIN = 9;
 const LEGACY_ACCOUNT_HASH_WORD_COUNT_MAX = 10;
+const LEGACY_HYPHENATED_ACCOUNT_HASH_SEGMENT_COUNT = 5;
+const ACCOUNT_HASH_WORD_SEGMENT_COUNT = 6;
+const ACCOUNT_HASH_SEGMENT_COUNT = ACCOUNT_HASH_WORD_SEGMENT_COUNT + 1;
+const ACCOUNT_HASH_V2_WORD_SEGMENT_COUNT = 7;
+const ACCOUNT_HASH_V2_SEGMENT_COUNT = ACCOUNT_HASH_V2_WORD_SEGMENT_COUNT + 2;
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 128;
 const PASSWORD_HASH_REGEX = /^[a-f0-9]{32}:[a-f0-9]{128}$/;
 const BOT_TOKEN_PREFIX = "achat_bot_";
 const BOT_TOKEN_SECRET_BYTES = 24;
+const MESSAGE_TEXT_MAX_LENGTH = 8192;
+const E2EE_PUBLIC_KEY_MAX_LENGTH = 1024;
+const USER_DEVICES_MIN = 1;
+const USER_DEVICES_MAX = 10;
+const USER_DEVICES_DEFAULT = 3;
+const DEVICE_LABEL_MAX_LENGTH = 48;
 
 const EMPTY_STORE = {
   users: [],
@@ -177,6 +189,23 @@ const sanitizeRoomName = value => {
   return cleaned;
 };
 
+const sanitizeDeviceLabel = value => {
+  const cleaned = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, DEVICE_LABEL_MAX_LENGTH);
+  return cleaned || "Unnamed device";
+};
+
+const normalizeMaxDevices = value => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return USER_DEVICES_DEFAULT;
+  }
+
+  return Math.max(USER_DEVICES_MIN, Math.min(USER_DEVICES_MAX, Math.floor(parsed)));
+};
+
 const normalizeEmail = value => String(value || "").trim().toLowerCase();
 
 const randomFixedDigits = digits => {
@@ -205,12 +234,27 @@ const isValidLegacyAccountHashTokens = tokens => {
   }
 
   const numberToken = list[list.length - 1] || "";
-  if (!ACCOUNT_HASH_NUMBER_REGEX.test(numberToken)) {
+  if (!LEGACY_ACCOUNT_HASH_NUMBER_REGEX.test(numberToken)) {
     return false;
   }
 
   const wordTokens = list.slice(0, -1);
   return wordTokens.every(token => ACCOUNT_HASH_WORD_REGEX.test(token));
+};
+
+const computeAccountHashChecksumWord = ({ firstSegment, middleWordSegments, numberSegment }) => {
+  const normalizedFirstSegment = String(firstSegment || "").trim().toLowerCase();
+  const normalizedMiddleWordSegments = Array.isArray(middleWordSegments)
+    ? middleWordSegments.map(segment => String(segment || "").trim().toLowerCase())
+    : [];
+  const normalizedNumberSegment = String(numberSegment || "").trim();
+  const checksumSource = [normalizedFirstSegment, ...normalizedMiddleWordSegments, normalizedNumberSegment].join("-");
+  const digest = crypto
+    .createHash("sha256")
+    .update(checksumSource)
+    .digest();
+  const checksumIndex = digest[0] % ACCOUNT_HASH_WORDS.length;
+  return ACCOUNT_HASH_WORDS[checksumIndex];
 };
 
 const normalizeAccountHash = value => {
@@ -221,16 +265,63 @@ const normalizeAccountHash = value => {
 
   const compact = raw.replace(/\s*-\s*/g, "-").replace(/\s+/g, "");
   const hyphenSegments = compact.split("-");
-  if (hyphenSegments.length === 5) {
-    const [segmentOne, segmentTwo, segmentThree, segmentFour, segmentFive] = hyphenSegments;
-    const isValidHyphenated =
-      ACCOUNT_HASH_FIRST_SEGMENT_REGEX.test(segmentOne || "") &&
-      ACCOUNT_HASH_WORD_REGEX.test(segmentTwo || "") &&
-      ACCOUNT_HASH_WORD_REGEX.test(segmentThree || "") &&
-      ACCOUNT_HASH_WORD_REGEX.test(segmentFour || "") &&
-      ACCOUNT_HASH_NUMBER_REGEX.test(segmentFive || "");
-    if (isValidHyphenated) {
-      return `${segmentOne}-${segmentTwo}-${segmentThree}-${segmentFour}-${segmentFive}`;
+  const isValidHyphenatedAccountHash = segments => {
+    if (segments.length < LEGACY_HYPHENATED_ACCOUNT_HASH_SEGMENT_COUNT) {
+      return false;
+    }
+
+    const firstWordSegment = String(segments[0] || "");
+    if (!ACCOUNT_HASH_FIRST_SEGMENT_REGEX.test(firstWordSegment)) {
+      return false;
+    }
+
+    if (segments.length === ACCOUNT_HASH_V2_SEGMENT_COUNT) {
+      const v2NumberSegment = String(segments[segments.length - 2] || "");
+      const checksumSegment = String(segments[segments.length - 1] || "");
+      const v2MiddleWordSegments = segments.slice(1, -2);
+      const hasValidV2MiddleWords = v2MiddleWordSegments.every(segment => ACCOUNT_HASH_WORD_REGEX.test(String(segment || "")));
+
+      if (!ACCOUNT_HASH_FIRST_SEGMENT_REGEX.test(firstWordSegment) || !hasValidV2MiddleWords || !ACCOUNT_HASH_NUMBER_REGEX.test(v2NumberSegment)) {
+        return false;
+      }
+
+      if (!ACCOUNT_HASH_WORD_REGEX.test(checksumSegment)) {
+        return false;
+      }
+
+      const expectedChecksum = computeAccountHashChecksumWord({
+        firstSegment: firstWordSegment,
+        middleWordSegments: v2MiddleWordSegments,
+        numberSegment: v2NumberSegment
+      });
+      return checksumSegment === expectedChecksum;
+    }
+
+    const numberSegment = String(segments[segments.length - 1] || "");
+    const middleWordSegments = segments.slice(1, -1);
+    const hasValidMiddleWords = middleWordSegments.every(segment => ACCOUNT_HASH_WORD_REGEX.test(String(segment || "")));
+    if (!hasValidMiddleWords) {
+      return false;
+    }
+
+    if (segments.length === ACCOUNT_HASH_SEGMENT_COUNT) {
+      return ACCOUNT_HASH_NUMBER_REGEX.test(numberSegment);
+    }
+
+    if (segments.length === LEGACY_HYPHENATED_ACCOUNT_HASH_SEGMENT_COUNT) {
+      return LEGACY_ACCOUNT_HASH_NUMBER_REGEX.test(numberSegment);
+    }
+
+    return false;
+  };
+
+  if (
+    hyphenSegments.length === ACCOUNT_HASH_V2_SEGMENT_COUNT ||
+    hyphenSegments.length === ACCOUNT_HASH_SEGMENT_COUNT ||
+    hyphenSegments.length === LEGACY_HYPHENATED_ACCOUNT_HASH_SEGMENT_COUNT
+  ) {
+    if (isValidHyphenatedAccountHash(hyphenSegments)) {
+      return hyphenSegments.join("-");
     }
   }
 
@@ -327,8 +418,41 @@ const createAccountHashCandidate = () => {
   const segmentTwo = pickWord();
   const segmentThree = pickWord();
   const segmentFour = pickWord();
-  const segmentFive = String(crypto.randomInt(1000, 10000));
-  return `${segmentOne}-${segmentTwo}-${segmentThree}-${segmentFour}-${segmentFive}`;
+  const segmentFive = pickWord();
+  const segmentSix = pickWord();
+  const segmentSeven = pickWord();
+  const segmentEight = String(crypto.randomInt(10000, 100000));
+  const segmentNine = computeAccountHashChecksumWord({
+    firstSegment: segmentOne,
+    middleWordSegments: [segmentTwo, segmentThree, segmentFour, segmentFive, segmentSix, segmentSeven],
+    numberSegment: segmentEight
+  });
+  return `${segmentOne}-${segmentTwo}-${segmentThree}-${segmentFour}-${segmentFive}-${segmentSix}-${segmentSeven}-${segmentEight}-${segmentNine}`;
+};
+
+const issueUniqueAccountHash = excludedDigest => {
+  const existingDigests = new Set(state.users.map(entry => String(entry.accountHashDigest || "")).filter(Boolean));
+  const normalizedExcludedDigest = String(excludedDigest || "").trim().toLowerCase();
+  if (normalizedExcludedDigest) {
+    existingDigests.delete(normalizedExcludedDigest);
+  }
+
+  for (let attempt = 0; attempt < 10000; attempt += 1) {
+    const accountHash = createAccountHashCandidate();
+    const normalized = normalizeAccountHash(accountHash);
+    if (!normalized) {
+      continue;
+    }
+
+    const digest = hashNormalizedAccountHash(normalized);
+    if (existingDigests.has(digest)) {
+      continue;
+    }
+
+    return { accountHash, digest };
+  }
+
+  throw new Error("Unable to generate a unique account hash");
 };
 
 const normalizeStore = value => {
@@ -393,6 +517,8 @@ const normalizeStore = value => {
       user.accountHashDigest = "";
     }
     user.accountHashUpdatedAt = user.accountHashUpdatedAt ? String(user.accountHashUpdatedAt) : null;
+    user.e2eePublicKey = String(user.e2eePublicKey || "").trim().slice(0, E2EE_PUBLIC_KEY_MAX_LENGTH);
+    user.maxDevices = user.isBot ? USER_DEVICES_MIN : normalizeMaxDevices(user.maxDevices);
     user.createdAt = user.createdAt || nowIso();
     user.lastLoginAt = user.lastLoginAt || user.createdAt;
 
@@ -440,7 +566,7 @@ const normalizeStore = value => {
     msg.id = messageId;
     msg.roomId = String(msg.roomId || "");
     msg.userId = String(msg.userId || "");
-    msg.text = String(msg.text || "").slice(0, 2000);
+    msg.text = String(msg.text || "").slice(0, MESSAGE_TEXT_MAX_LENGTH);
     msg.createdAt = msg.createdAt || nowIso();
     msg.editedAt = msg.editedAt ? String(msg.editedAt) : null;
   }
@@ -448,6 +574,7 @@ const normalizeStore = value => {
   for (const session of next.sessions) {
     session.id = String(session.id || crypto.randomUUID());
     session.userId = String(session.userId || "");
+    session.deviceLabel = sanitizeDeviceLabel(session.deviceLabel || "");
     session.createdAt = session.createdAt || nowIso();
     session.lastSeenAt = session.lastSeenAt || session.createdAt;
   }
@@ -1059,6 +1186,63 @@ const authenticateBotToken = async authToken => {
   return getUserById(botUser.id);
 };
 
+const createAccountWithAccountHash = async ({ username }) => {
+  const requestedUsername = String(username || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 32);
+  if (!requestedUsername) {
+    throw new Error("Username is required");
+  }
+
+  const normalizedUsername = sanitizeDisplayName(requestedUsername);
+
+  const usernameExists = state.users.some(entry => {
+    return !entry.isBot && String(entry.displayName || "").toLowerCase() === normalizedUsername.toLowerCase();
+  });
+
+  if (usernameExists) {
+    throw new Error("Username is already taken");
+  }
+
+  const id = generateUniqueNumericId(7, new Set(state.users.map(entry => entry.id)));
+  const hashBundle = issueUniqueAccountHash();
+  const createdAt = nowIso();
+  const user = {
+    id,
+    oauthKey: `local:${id}`,
+    oauthSub: id,
+    oauthProvider: "local",
+    oauthProviderId: id,
+    oauthEmail: null,
+    displayName: normalizedUsername,
+    displayNameCustom: true,
+    developerMode: false,
+    avatarUrl: null,
+    passwordHash: "",
+    passwordLoginEmail: "",
+    passwordUpdatedAt: null,
+    accountHashDigest: hashBundle.digest,
+    accountHashUpdatedAt: createdAt,
+    e2eePublicKey: "",
+    maxDevices: USER_DEVICES_DEFAULT,
+    isBot: false,
+    botOwnerUserId: null,
+    botTokenHash: "",
+    botTokenUpdatedAt: null,
+    createdAt,
+    lastLoginAt: createdAt
+  };
+
+  state.users.push(user);
+  await persistUser(user);
+
+  return {
+    user: getUserById(user.id),
+    accountHash: hashBundle.accountHash
+  };
+};
+
 const setUserPasswordLogin = async ({ userId, password, currentPassword = "" }) => {
   const user = findUserById(userId);
   if (!user) {
@@ -1187,32 +1371,15 @@ const generateAccountHashForUser = async ({ userId }) => {
     throw new Error("Bot users cannot use account hash login");
   }
 
-  const existingDigests = new Set(state.users.map(entry => String(entry.accountHashDigest || "")).filter(Boolean));
-  existingDigests.delete(String(user.accountHashDigest || ""));
+  const hashBundle = issueUniqueAccountHash(user.accountHashDigest);
+  user.accountHashDigest = hashBundle.digest;
+  user.accountHashUpdatedAt = nowIso();
+  await persistUser(user);
 
-  for (let attempt = 0; attempt < 10000; attempt += 1) {
-    const accountHash = createAccountHashCandidate();
-    const normalized = normalizeAccountHash(accountHash);
-    if (!normalized) {
-      continue;
-    }
-
-    const digest = hashNormalizedAccountHash(normalized);
-    if (existingDigests.has(digest)) {
-      continue;
-    }
-
-    user.accountHashDigest = digest;
-    user.accountHashUpdatedAt = nowIso();
-    await persistUser(user);
-
-    return {
-      accountHash,
-      user: getUserById(user.id)
-    };
-  }
-
-  throw new Error("Unable to generate a unique account hash");
+  return {
+    accountHash: hashBundle.accountHash,
+    user: getUserById(user.id)
+  };
 };
 
 const authenticateUserByAccountHash = async accountHash => {
@@ -1248,10 +1415,25 @@ const disableUserAccountHashLogin = async ({ userId }) => {
   return getUserById(user.id);
 };
 
-const createSession = async userId => {
+const createSession = async (userId, { deviceLabel = "" } = {}) => {
+  const user = findUserById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  const normalizedUserId = String(userId);
+  const activeSessions = state.sessions.filter(session => String(session.userId) === normalizedUserId);
+  const maxDevices = normalizeMaxDevices(user.maxDevices);
+  if (activeSessions.length >= maxDevices) {
+    const error = new Error("Device limit reached. Revoke an existing device to continue.");
+    error.code = "DEVICE_LIMIT_REACHED";
+    throw error;
+  }
+
   const session = {
     id: crypto.randomUUID(),
-    userId: String(userId),
+    userId: normalizedUserId,
+    deviceLabel: sanitizeDeviceLabel(deviceLabel),
     createdAt: nowIso(),
     lastSeenAt: nowIso()
   };
@@ -1259,6 +1441,58 @@ const createSession = async userId => {
   state.sessions.push(session);
   await persistSession(session);
   return clone(session);
+};
+
+const listUserDevices = ({ userId, currentSessionId = "" }) => {
+  const normalizedUserId = String(userId);
+  const normalizedCurrentSessionId = String(currentSessionId || "");
+  return state.sessions
+    .filter(session => String(session.userId) === normalizedUserId)
+    .sort((left, right) => toTimestamp(right.lastSeenAt) - toTimestamp(left.lastSeenAt))
+    .map(session => ({
+      id: session.id,
+      deviceLabel: sanitizeDeviceLabel(session.deviceLabel || ""),
+      createdAt: session.createdAt,
+      lastSeenAt: session.lastSeenAt,
+      isCurrent: session.id === normalizedCurrentSessionId
+    }));
+};
+
+const setUserMaxDevices = async ({ userId, maxDevices }) => {
+  const user = findUserById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  if (user.isBot) {
+    throw new Error("Bot users cannot update device settings");
+  }
+
+  const normalizedMaxDevices = normalizeMaxDevices(maxDevices);
+  const activeSessionCount = state.sessions.filter(session => String(session.userId) === String(user.id)).length;
+  if (normalizedMaxDevices < activeSessionCount) {
+    throw new Error("Max devices cannot be less than your current active device count");
+  }
+
+  user.maxDevices = normalizedMaxDevices;
+  await persistUser(user);
+  return getUserById(user.id);
+};
+
+const revokeUserDeviceSession = async ({ userId, sessionId }) => {
+  const user = findUserById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  const targetSessionId = String(sessionId || "");
+  const target = findSessionById(targetSessionId);
+  if (!target || String(target.userId) !== String(user.id)) {
+    throw new Error("Device session not found");
+  }
+
+  await deleteSession(target.id);
+  return { revokedSessionId: target.id };
 };
 
 const touchSession = async sessionId => {
@@ -1674,7 +1908,7 @@ const rejectPendingUser = async ({ roomId, ownerUserId, targetUserId }) => {
 const addMessage = async ({ roomId, userId, text }) => {
   const room = findRoomById(roomId);
   const normalizedUserId = String(userId);
-  const normalizedText = String(text || "").replace(/\r\n/g, "\n").slice(0, 2000).trim();
+  const normalizedText = String(text || "").replace(/\r\n/g, "\n").slice(0, MESSAGE_TEXT_MAX_LENGTH).trim();
 
   if (!room) {
     throw new Error("Room not found");
@@ -1723,7 +1957,7 @@ const editMessage = async ({ roomId, messageId, requesterUserId, text }) => {
 
   const normalizedRequesterId = String(requesterUserId);
   const normalizedMessageId = String(messageId);
-  const normalizedText = String(text || "").replace(/\r\n/g, "\n").slice(0, 2000).trim();
+  const normalizedText = String(text || "").replace(/\r\n/g, "\n").slice(0, MESSAGE_TEXT_MAX_LENGTH).trim();
   const message = state.messages.find(entry => entry.id === normalizedMessageId);
   if (!message || String(message.roomId) !== String(room.id)) {
     throw new Error("Message not found");
@@ -1972,13 +2206,10 @@ const getUserById = userId => {
     displayName: user.displayName,
     developerMode: user.isBot ? false : Boolean(user.developerMode),
     avatarUrl: user.avatarUrl,
-    oauthProvider: user.oauthProvider,
-    email: user.isBot ? null : user.oauthEmail || null,
-    hasPasswordLogin: user.isBot ? false : Boolean(user.passwordHash),
-    passwordLoginEmail: user.isBot ? null : user.passwordLoginEmail || null,
-    passwordUpdatedAt: user.isBot ? null : user.passwordUpdatedAt || null,
     hasAccountHash: user.isBot ? false : Boolean(user.accountHashDigest),
     accountHashUpdatedAt: user.isBot ? null : user.accountHashUpdatedAt || null,
+    hasE2EEPublicKey: user.isBot ? false : Boolean(String(user.e2eePublicKey || "")),
+    maxDevices: user.isBot ? USER_DEVICES_MIN : normalizeMaxDevices(user.maxDevices),
     isBot: Boolean(user.isBot),
     botOwnerUserId: user.isBot ? user.botOwnerUserId || null : null,
     botTokenUpdatedAt: user.isBot ? user.botTokenUpdatedAt || null : null,
@@ -2016,6 +2247,52 @@ const updateUserDeveloperMode = async ({ userId, enabled }) => {
   user.developerMode = Boolean(enabled);
   await persistUser(user);
   return getUserById(user.id);
+};
+
+const updateUserE2EEPublicKey = async ({ userId, publicKey }) => {
+  const user = findUserById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  if (user.isBot) {
+    throw new Error("Bots cannot register E2EE keys");
+  }
+
+  const normalizedPublicKey = String(publicKey || "").trim();
+  if (!normalizedPublicKey) {
+    throw new Error("publicKey is required");
+  }
+
+  if (normalizedPublicKey.length > E2EE_PUBLIC_KEY_MAX_LENGTH) {
+    throw new Error("publicKey is too long");
+  }
+
+  user.e2eePublicKey = normalizedPublicKey;
+  await persistUser(user);
+  return getUserById(user.id);
+};
+
+const getRoomE2EEPublicKeys = ({ roomId, requesterUserId }) => {
+  const room = findRoomById(roomId);
+  if (!room) {
+    throw new Error("Room not found");
+  }
+
+  const accessStatus = getRoomAccessForUser(room.id, requesterUserId);
+  if (accessStatus !== "member") {
+    throw new Error("You do not have access to this room");
+  }
+
+  return room.memberUserIds
+    .map(userId => findUserById(userId))
+    .filter(Boolean)
+    .filter(user => !user.isBot)
+    .map(user => ({
+      userId: user.id,
+      publicKey: String(user.e2eePublicKey || "").trim()
+    }))
+    .filter(entry => Boolean(entry.publicKey));
 };
 
 const getSessionUser = sessionId => {
@@ -2121,14 +2398,18 @@ module.exports = {
   authenticateBotToken,
   authenticateUserByAccountHash,
   authenticateUserByPassword,
+  createAccountWithAccountHash,
+  createSession,
+  deleteSession,
+  getSessionUser,
+  listUserDevices,
   approvePendingUser,
   createBotForOwner,
   createRoom,
-  createSession,
   deleteBotForOwner,
   deleteMessage,
   deleteRoom,
-  deleteSession,
+  revokeUserDeviceSession,
   disableUserAccountHashLogin,
   disableUserPasswordLogin,
   deleteUserAccount,
@@ -2139,10 +2420,11 @@ module.exports = {
   getMessagesForRoom,
   getRoomAccessForUser,
   getRoomById,
+  getRoomE2EEPublicKeys,
   getRoomMembers,
   getRoomPendingUsers,
   getRoomUserIds,
-  getSessionUser,
+  setUserMaxDevices,
   getLimitedRoomInfoForUser,
   getLimitedUserInfoById,
   getLimitedUserInfoInRoomForUser,
@@ -2161,6 +2443,7 @@ module.exports = {
   touchSession,
   updateBotDisplayNameForOwner,
   updateUserDeveloperMode,
+  updateUserE2EEPublicKey,
   updateUserDisplayName,
   upsertOAuthUser
 };

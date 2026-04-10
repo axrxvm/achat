@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AChat Terms of Service</title>
+    <link rel="icon" href="./img/favicon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg-main: #2b2d31;
+        --text: #f2f4f8;
+        --text-muted: #abb2bf;
+        --card: rgba(22, 23, 27, 0.94);
+        --line: rgba(255, 255, 255, 0.1);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        font-family: "IBM Plex Sans", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(1000px 700px at 100% -20%, #3f2364 0%, transparent 55%),
+          radial-gradient(900px 500px at -10% 110%, #2a2651 0%, transparent 50%),
+          var(--bg-main);
+      }
+
+      .wrap {
+        width: min(940px, 96vw);
+        margin: 40px auto;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 28px;
+      }
+
+      h1,
+      h2 {
+        font-family: "Space Grotesk", sans-serif;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+      }
+
+      .muted {
+        color: var(--text-muted);
+        margin-bottom: 22px;
+      }
+
+      h2 {
+        margin-top: 20px;
+        margin-bottom: 8px;
+      }
+
+      p,
+      li {
+        color: #d7dceb;
+        line-height: 1.6;
+      }
+
+      ul {
+        margin: 0;
+        padding-left: 18px;
+      }
+
+      a {
+        color: #d8b4fe;
+      }
+
+      .top-links {
+        display: flex;
+        gap: 14px;
+        margin-top: 20px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(216, 180, 254, 0.45);
+        color: #f3e8ff;
+        border-radius: 999px;
+        padding: 7px 12px;
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>Terms of Service</h1>
+      <p class="muted">Last updated: April 10, 2026</p>
+
+      <h2>Acceptance</h2>
+      <p>By using AChat, you agree to these terms.</p>
+
+      <h2>Account Security</h2>
+      <p>
+        You are responsible for protecting your account hex and device security. Activity performed using your
+        credentials is your responsibility.
+      </p>
+
+      <h2>Acceptable Use</h2>
+      <ul>
+        <li>Do not abuse, attack, or disrupt the service.</li>
+        <li>Do not use AChat for illegal activity.</li>
+        <li>Respect other users and applicable laws.</li>
+      </ul>
+
+      <h2>Availability</h2>
+      <p>
+        The service may change, be interrupted, or be discontinued at any time. No uptime guarantees are provided.
+      </p>
+
+      <h2>Limitation of Liability</h2>
+      <p>
+        AChat is provided "as is" without warranties. To the maximum extent permitted by law, maintainers are not
+        liable for indirect or consequential damages.
+      </p>
+
+      <h2>Contact</h2>
+      <p>
+        Questions about these terms can be raised via the repository:
+        <a href="https://github.com/axrxvm/achat" target="_blank" rel="noopener noreferrer">GitHub</a>.
+      </p>
+
+      <div class="top-links">
+        <a class="pill" href="./index.html">Back to AChat</a>
+        <a class="pill" href="./privacy.html">Privacy Policy</a>
+      </div>
+    </main>
+  </body>
+</html>
